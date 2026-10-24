@@ -196,7 +196,12 @@ server back at that point:
 - With hxcpp 4.3.2, or git hxcpp on Haxe 4, breakpoints in a script never take effect.
 
 Until the script is loaded, Zed shows its breakpoints as unverified, and they stay that way after they
-take effect. Attaching to a host that's already running isn't supported yet.
+take effect.
+
+A host that loads the script again when it changes keeps working with the debugger: rebuild the script
+while the session runs, and breakpoints stop in the new code. Rebuild it with `-debug`, as the debugger
+does; a script built without it has no line information, and its breakpoints never stop. Attaching to
+a host that's already running isn't supported yet.
 
 ### HashLink
 
@@ -417,8 +422,8 @@ haxe test.hxml        # unit tests
 node e2e/run.js       # the bridge debugging real Haxe programs; --haxe=PATH picks the Haxe
 ```
 
-The end-to-end tests skip hxcpp when it isn't installed, and HashLink when `hl` isn't on your PATH
-(`--hl=PATH` names one). `--hxcpp-debug-server=PATH` tests a checkout of the library instead of the
+The end-to-end tests skip hxcpp when it isn't installed, HashLink when `hl` isn't on your PATH
+(`--hl=PATH` names one), and cppia unless hxcpp is libhxcpp (`haxelib dev hxcpp <libhxcpp checkout>`). `--hxcpp-debug-server=PATH` tests a checkout of the library instead of the
 version `src/lib.rs` pins.
 
 Haxe 5 needs hxcpp from git. To test with it without changing the hxcpp your other projects use,

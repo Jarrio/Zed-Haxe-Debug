@@ -1,0 +1,3 @@
+-cp src
+-main Script
+--cppia bin/script.cppia

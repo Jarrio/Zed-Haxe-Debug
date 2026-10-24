@@ -573,6 +573,48 @@ const tests = {
     await client.close();
   },
 
+  // A cppia script in a host built for debugging, which loads the script again when it changes: a
+  // breakpoint in the script stops, with its variables and the console, and keeps stopping in the code
+  // a rebuild brings.
+  async cppia(env) {
+    const session = await start(env, "cppia", { request: "launch", hxml: "script.hxml", program: "bin/host/Host-debug" });
+    const { client, dir } = session;
+    const haxe = env.haxe ?? "haxe";
+    const run = (args) => {
+      try {
+        childProcess.execFileSync(haxe, args, { cwd: dir, encoding: "utf8", stdio: "pipe" });
+      } catch (error) {
+        throw new Error(`haxe ${args.join(" ")} failed: ${(error.stdout ?? "") + (error.stderr ?? "")}`.slice(-3000));
+      }
+    };
+    // The host, as a project builds its own: -debug, -D scriptable and the debug server.
+    run(["host.hxml", "-debug", "-cp", env.hxcppDebugServer, "--macro", "hxcpp.debug.jsonrpc.Macro.injectServer()"]);
+    const file = path.join(dir, "src", "Script.hx");
+    const line = breakLine(file, "tick");
+    const { threadId, frame, variables } = await runToBreakpoint(session, file, line);
+    check(frame.name === "Script.tick" && frame.line === line, `stopped at ${frame.name}:${frame.line}`);
+    check(variables.value === "1", `value is ${variables.value}`);
+    const doubled = await client.request("evaluate", { expression: "value * 2", frameId: frame.id, context: "repl" });
+    check(doubled.success && doubled.body.result === "2", `value * 2 gave ${JSON.stringify(doubled.body ?? doubled.message)}`);
+    // Rebuilt while the host waits at the breakpoint, with -debug, as a project's task would; the host
+    // loads it on its next tick.
+    fs.writeFileSync(file, fs.readFileSync(file, "utf8").replace("n * 2 + 1", "n * 10 + 7"));
+    run(["script.hxml", "-debug"]);
+    const next = client.nextEvent("stopped");
+    await client.request("continue", { threadId });
+    const stop = (await next).body;
+    const top = (await client.request("stackTrace", { threadId: stop.threadId })).body.stackFrames[0];
+    const value = await client.request("evaluate", { expression: "value", frameId: top.id, context: "repl" });
+    check(value.body?.result === "17", `after the rebuild, value is ${JSON.stringify(value.body ?? value.message)}, not 1 * 10 + 7`);
+    await client.request("setBreakpoints", { source: { path: file }, breakpoints: [] });
+    await client.request("continue", { threadId: stop.threadId });
+    fs.writeFileSync(path.join(dir, "stop"), "");
+    await client.event("terminated");
+    check((client.output().match(/loaded the script/g) ?? []).length === 2, `the host didn't load the script twice: ${client.output()}`);
+    await client.request("disconnect", {});
+    await client.close();
+  },
+
   async hxcppBuildError(env) {
     const { client, config } = await start(env, "hxcpp", { request: "launch", haxeArgs: ["-cp", "src", "-main", "Missing", "--cpp", "bin"] });
     const launch = await client.request("launch", config, buildTime);
@@ -747,6 +789,21 @@ async function pinnedHxcppDebugServer() {
   return server;
 }
 
+/**
+  Why the cppia tests can't run here, or null when they can: breakpoints in a script need an hxcpp that
+  tells the debugger when a script loads, which only libhxcpp does (HXCPP_DBG_ON_SCRIPT_LOADED).
+**/
+function cppiaMissing() {
+  try {
+    const output = childProcess.execFileSync("haxelib", ["path", "hxcpp"], { cwd: os.tmpdir(), encoding: "utf8", shell: process.platform === "win32" });
+    const dir = output.split(/\r?\n/).find((line) => line.trim() !== "" && !line.startsWith("-"));
+    const debug = dir == null ? "" : fs.readFileSync(path.join(dir.trim(), "include", "hx", "Debug.h"), "utf8");
+    return debug.includes("HXCPP_DBG_ON_SCRIPT_LOADED") ? null : "breakpoints in cppia scripts need libhxcpp (haxelib dev hxcpp <libhxcpp>)";
+  } catch {
+    return "hxcpp isn't installed (haxelib install hxcpp)";
+  }
+}
+
 function hxcppInstalled() {
   try {
     // From a temporary folder, as the tests run: bridge/ has a local haxelib repository without hxcpp.
@@ -774,6 +831,7 @@ function download(url, file, redirects = 5) {
 
 async function main() {
   const hxcpp = hxcppInstalled();
+  const cppia = cppiaMissing();
   const noHashLink = hashlinkMissing(option("hl"));
   const env = {
     haxe: option("haxe"),
@@ -787,6 +845,10 @@ async function main() {
   let failed = 0;
   for (const [name, test] of Object.entries(tests)) {
     if (only.length > 0 && !only.includes(name)) continue;
+    if (name.startsWith("cppia") && cppia) {
+      console.log(`skip ${name}: ${cppia}`);
+      continue;
+    }
     if (name.startsWith("hxcpp") && !hxcpp) {
       console.log(`skip ${name}: hxcpp isn't installed (haxelib install hxcpp)`);
       continue;

@@ -41,7 +41,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        haxe: [4.0.5, 4.3.7, latest]
+        haxe: [4.0.5, 4.3.7, 5.0.0-preview.1, latest]
     runs-on: ${{ matrix.os }}
     # Haxe nightlies change under us; a failure there is worth a look, not a red build.
     continue-on-error: ${{ matrix.haxe == 'latest' }}
@@ -53,11 +53,21 @@ jobs:
       - uses: krdlab/setup-haxe@v2
         with:
           haxe-version: ${{ matrix.haxe }}
-      # For the hxcpp tests, which also need the C++ compiler each runner has. Not with the Haxe nightly:
-      # it needs hxcpp from git, which can't build the debug server with it (see the README's known
-      # issues), so the hxcpp tests skip there.
-      - if: matrix.haxe != 'latest'
+      # hxcpp, for the hxcpp tests, which also need the C++ compiler each runner has: the haxelib release
+      # for Haxe 4, and from git for Haxe 5, which refuses the release. The preview gets the commit it was
+      # tested with. The nightly gets master, which may not build the debug server (see the README's
+      # known issues); its failures show without failing the run.
+      - name: hxcpp (haxelib)
+        if: startsWith(matrix.haxe, '4.')
         run: haxelib install hxcpp --quiet --always
+      - name: hxcpp (git)
+        if: "!startsWith(matrix.haxe, '4.')"
+        shell: bash
+        run: |
+          git clone --quiet https://github.com/HaxeFoundation/hxcpp "$RUNNER_TEMP/hxcpp"
+          if [ "${{ matrix.haxe }}" != latest ]; then git -C "$RUNNER_TEMP/hxcpp" checkout --quiet 504403dbcc0f289dba818ca53685a584f671ddc3; fi
+          haxelib dev hxcpp "$RUNNER_TEMP/hxcpp"
+          (cd "$RUNNER_TEMP/hxcpp/tools/hxcpp" && haxe compile.hxml)
       # For the HashLink tests: HashLink 1.16, the stable release, which has no Linux binary, so Linux
       # builds the VM. macOS runners are arm64, where the HashLink VM doesn't run; the tests skip there.
       - name: HashLink (Linux)
@@ -76,6 +86,36 @@ jobs:
           echo "$RUNNER_TEMP/hashlink-1.16.0-win" >> "$GITHUB_PATH"
       - run: node bridge/e2e/run.js
         shell: bash
+
+  # Breakpoints in cppia scripts need libhxcpp, OpenFL's continuation of hxcpp: the only one that tells
+  # the debugger when a script loads. The other runs skip the cppia test.
+  cppia:
+    name: cppia with libhxcpp (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: krdlab/setup-haxe@v2
+        with:
+          haxe-version: 4.3.7
+      - name: libhxcpp
+        shell: bash
+        run: |
+          git clone --quiet https://github.com/openfl/libhxcpp "$RUNNER_TEMP/libhxcpp"
+          git -C "$RUNNER_TEMP/libhxcpp" checkout --quiet 2573b944e6a5661f22639842443f45f2907cc8ed
+          haxelib dev hxcpp "$RUNNER_TEMP/libhxcpp"
+          (cd "$RUNNER_TEMP/libhxcpp/tools/hxcpp" && haxe compile.hxml)
+      # Fails if the test skips: here it has to run.
+      - shell: bash
+        run: |
+          node bridge/e2e/run.js cppia | tee "$RUNNER_TEMP/cppia.txt"
+          grep -q "^ok cppia" "$RUNNER_TEMP/cppia.txt"
 
   package:
     name: Package
