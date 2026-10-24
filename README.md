@@ -186,6 +186,17 @@ node e2e/run.js       # the real bridge debugging real Haxe programs; --haxe=PAT
 The end-to-end tests skip hxcpp when it isn't installed. `--hxcpp-debug-server=PATH` tests a checkout
 of the library instead of the version `src/lib.rs` pins.
 
+Haxe 5 needs hxcpp from git. To test with it without changing the hxcpp your other projects use, install
+it in a local repository in this folder, and point the tests at it (they build in temporary folders,
+outside its reach):
+
+```sh
+haxelib newrepo
+haxelib git hxcpp https://github.com/HaxeFoundation/hxcpp
+(cd .haxelib/hxcpp/git/tools/hxcpp && haxe compile.hxml)   # hxcpp's build tool, once
+HAXELIB_PATH=$PWD/.haxelib node bridge/e2e/run.js --haxe=/path/to/haxe5/haxe
+```
+
 Then install the folder as a dev extension, or rebuild it from Zed's extensions page. To try bridge
 changes without rebuilding the extension, point Zed at your build:
 

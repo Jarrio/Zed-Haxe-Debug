@@ -1,6 +1,7 @@
 target/
 **.wasm
-bridge/.haxelib/
+# Local haxelib repositories: bridge/ has the bridge's libraries, the root a git hxcpp for testing.
+.haxelib/
 bridge/bin/test.js
 bridge/e2e/.adapters/
 # Notes from the chat that started this project; not part of it.
