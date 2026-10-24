@@ -1,0 +1,9 @@
+# Runs the unit tests: haxe test.hxml
+-lib hxnodejs
+-lib utest
+-cp src
+-cp test
+-main TestMain
+-D js-es=6
+-js bin/test.js
+--cmd node bin/test.js

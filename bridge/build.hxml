@@ -1,0 +1,8 @@
+# Builds bin/bridge.js, which the Rust shim embeds into the extension.
+# Install dependencies once with: haxelib newrepo && haxelib install install.hxml
+-lib hxnodejs
+-cp src
+-main bridge.Main
+-D js-es=6
+--dce full
+-js bin/bridge.js

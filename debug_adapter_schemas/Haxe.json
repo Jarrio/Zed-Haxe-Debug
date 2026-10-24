@@ -1,0 +1,76 @@
+{
+  "properties": {
+    "request": {
+      "type": "string",
+      "enum": ["launch"],
+      "description": "Always \"launch\": the debugger compiles and runs the program.",
+      "default": "launch"
+    },
+    "target": {
+      "type": "string",
+      "enum": ["eval", "hxcpp"],
+      "description": "Which debugger to use. Without it, the build's output decides: --interp and --run use eval, --cpp uses hxcpp. \"eval\" with any other build debugs its macros and writes no output."
+    },
+    "hxml": {
+      "type": "string",
+      "description": "The .hxml to build, relative to cwd. Without it (and without haxeArgs or program), the hxml the Haxe language server uses, else one that runs with --interp or --run, else the only one."
+    },
+    "haxeArgs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Haxe command-line arguments, instead of hxml."
+    },
+    "program": {
+      "type": "string",
+      "description": "hxcpp: the program to run, relative to cwd. Without hxml or haxeArgs, a program already built (with -debug and hxcpp-debug-server), so nothing is built. Default: the executable the build makes."
+    },
+    "args": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "hxcpp: the program's arguments."
+    },
+    "env": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "hxcpp: environment variables for the program, added to Zed's."
+    },
+    "port": {
+      "type": "integer",
+      "description": "hxcpp: port the program's debug server connects to. Default: a free one, or for a program built elsewhere or with its own -lib hxcpp-debug-server, that library's port (6972 unless -D HXCPP_DEBUG_PORT says otherwise)."
+    },
+    "cwd": {
+      "type": "string",
+      "description": "Folder to run Haxe and the hxcpp program in. Default: the project folder."
+    },
+    "stopOnEntry": {
+      "type": "boolean",
+      "description": "eval: pause before the first line runs.",
+      "default": false
+    },
+    "haxePath": {
+      "type": "string",
+      "description": "Haxe executable to use. Default: the one the Haxe language server would pick (.haxerc with lix or haxe-manager, else PATH)."
+    },
+    "mergeScopes": {
+      "type": "boolean",
+      "description": "eval: show locals, captured variables and arguments as one list.",
+      "default": true
+    },
+    "showGeneratedVariables": {
+      "type": "boolean",
+      "description": "eval: also show variables the compiler generated.",
+      "default": false
+    },
+    "traceFile": {
+      "type": "string",
+      "description": "For extension development: append every DAP message the bridge relays to this file."
+    }
+  },
+  "required": ["request"]
+}

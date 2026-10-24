@@ -1,0 +1,80 @@
+name: Test
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_call:
+
+jobs:
+  bridge:
+    name: Bridge build and unit tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: bridge
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # bin/bridge.js is built with Haxe 4.3.7, so the check below can rebuild it byte for byte.
+      - uses: krdlab/setup-haxe@v2
+        with:
+          haxe-version: 4.3.7
+      - run: haxelib newrepo && haxelib install install.hxml --always
+      - name: bin/bridge.js matches the source
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          haxe build.hxml
+          git diff --exit-code --stat bin/bridge.js || { echo "Rebuild bin/bridge.js with Haxe 4.3.7 (haxe build.hxml) and commit it."; exit 1; }
+      - run: haxe test.hxml
+
+  e2e:
+    name: End to end (${{ matrix.os }}, Haxe ${{ matrix.haxe }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        haxe: [4.0.5, 4.3.7, latest]
+    runs-on: ${{ matrix.os }}
+    # Haxe nightlies change under us; a failure there is worth a look, not a red build.
+    continue-on-error: ${{ matrix.haxe == 'latest' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: krdlab/setup-haxe@v2
+        with:
+          haxe-version: ${{ matrix.haxe }}
+      # For the hxcpp tests, which also need the C++ compiler each runner has.
+      - run: haxelib install hxcpp --quiet --always
+      - run: node bridge/e2e/run.js
+        shell: bash
+
+  package:
+    name: Package
+    runs-on: ubuntu-latest
+    env:
+      # The CLI Zed's extension registry builds with (zed-industries/extensions).
+      ZED_EXTENSION_CLI: https://zed-extension-cli.nyc3.digitaloceanspaces.com/9ee3c503a4bbbc6b4a0f8a789acca4871d773223/x86_64-unknown-linux-gnu/zed-extension
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup target add wasm32-wasip2
+      - run: |
+          curl -fsSL -o "$RUNNER_TEMP/zed-extension" "$ZED_EXTENSION_CLI"
+          chmod +x "$RUNNER_TEMP/zed-extension"
+          mkdir -p "$RUNNER_TEMP/out" "$RUNNER_TEMP/scratch"
+          "$RUNNER_TEMP/zed-extension" --source-dir . --output-dir "$RUNNER_TEMP/out" --scratch-dir "$RUNNER_TEMP/scratch"
+          mv "$RUNNER_TEMP/out/archive.tar.gz" haxe-debug.tar.gz
+          tar -tzf haxe-debug.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: haxe-debug
+          path: haxe-debug.tar.gz
