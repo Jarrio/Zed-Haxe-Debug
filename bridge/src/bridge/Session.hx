@@ -111,10 +111,28 @@ class Session {
 			return;
 		}
 		if (message.type == "request" && message.command == "launch") {
-			message.arguments = plan.arguments;
-			Log.message("bridge (launch as sent to the debugger)", message);
+			final prelaunch = plan.prelaunch;
+			if (prelaunch != null) {
+				prelaunch.run(text -> send({seq: 0, type: "event", event: "output", body: {category: "console", output: text}}))
+					.then(function(arguments) {
+						launch(message, arguments, debugger);
+					}, function(error:Dynamic) {
+						respond(message, null, Std.string(error));
+						send({seq: 0, type: "event", event: "terminated"});
+					});
+				return;
+			}
+			launch(message, plan.arguments, debugger);
+			return;
 		}
 		debugger.send(message);
+	}
+
+	/** Sends the debugger `launch` with the arguments the plan worked out. **/
+	function launch(request:Message, arguments:Dynamic, debugger:Adapter) {
+		request.arguments = arguments;
+		Log.message("bridge (launch as sent to the debugger)", request);
+		debugger.send(request);
 	}
 
 	/** Without a debugger, `initialize` succeeds so that Zed goes on to `launch`, which fails with the reason. **/
@@ -165,6 +183,7 @@ class Session {
 			return;
 		}
 		exiting = true;
+		Build.stopAll();
 		debugger?.kill();
 		// Let stdout drain first, or Zed may miss the last messages.
 		process.stdout.write("", () -> process.exit(code));

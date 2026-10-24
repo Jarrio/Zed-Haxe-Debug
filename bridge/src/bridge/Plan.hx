@@ -1,15 +1,20 @@
 package bridge;
 
+import bridge.Build.HaxeRun;
 import bridge.Settings.ProjectSettings;
+import bridge.dap.BodylessResponses;
 import bridge.dap.Filter;
+import bridge.project.HaxeArgs;
 import bridge.project.Hxml;
 import bridge.targets.Eval;
+import bridge.targets.HashLink;
 import bridge.targets.Hxcpp;
 import bridge.toolchain.Haxerc;
 import bridge.toolchain.Toolchain;
 import bridge.util.Files;
 import haxe.DynamicAccess;
 import haxe.io.Path;
+import js.lib.Promise;
 import sys.FileSystem;
 
 /**
@@ -27,6 +32,7 @@ typedef LaunchConfig = {
 	var ?mergeScopes:Bool;
 	var ?showGeneratedVariables:Bool;
 	var ?program:String;
+	var ?hl:String;
 	var ?args:Array<String>;
 	var ?env:DynamicAccess<String>;
 	var ?port:Int;
@@ -39,6 +45,20 @@ typedef Adapters = {
 
 	/** The hxcpp-debug-server library, which the bridge compiles into hxcpp programs. **/
 	var ?hxcppDebugServer:String;
+
+	/** hashlink-debugger's adapter.js. **/
+	var ?hashlink:String;
+}
+
+/** Work before the debugger gets `launch`, for a debugger that doesn't build the program itself. **/
+typedef Prelaunch = {
+	final build:HaxeRun;
+
+	/**
+		Runs the build, passing its output on, and resolves with the `launch` arguments. Rejects with a message
+		for the user.
+	**/
+	final run:(output:String->Void) -> Promise<Dynamic>;
 }
 
 enum AdapterKind {
@@ -58,6 +78,8 @@ typedef Plan = {
 
 	/** Work around the debugger's quirks in the messages it sends Zed, in this order. **/
 	final filters:Array<Filter>;
+
+	final ?prelaunch:Prelaunch;
 }
 
 /** Why a session can't start, worded for the user: Zed shows it as the launch error. **/
@@ -79,7 +101,7 @@ class Planner {
 		final prebuilt = config.program != null && config.haxeArgs == null && config.hxml == null;
 		final haxeArgs = prebuilt ? [] : (config.haxeArgs ?? hxmlArgs(config.hxml == null ? defaultHxml(projectRoot, settings) : absolute(cwd, config.hxml), cwd));
 		final output = outputOf(Hxml.expand(haxeArgs, cwd));
-		final target = config.target ?? output ?? (prebuilt ? "hxcpp" : "eval");
+		final target = config.target ?? output ?? (prebuilt ? (Path.extension(config.program) == "hl" ? "hl" : "hxcpp") : "eval");
 		final toolchain = Toolchain.resolve({
 			workspaceRoot: workspaceRoot,
 			projectRoot: projectRoot,
@@ -107,10 +129,31 @@ class Planner {
 					arguments: Hxcpp.launch(config, haxeArgs, cwd, toolchain, adapters.hxcppDebugServer),
 					filters: []
 				};
+			case "hl":
+				final launch = HashLink.launch(config, haxeArgs, cwd, toolchain);
+				{
+					target: target,
+					adapter: Node(installed(adapters.hashlink, "hashlink-debugger")),
+					cwd: cwd,
+					arguments: launch.arguments,
+					filters: [new BodylessResponses()],
+					prelaunch: HashLink.prelaunch(launch.arguments, launch.build)
+				};
+			case "cppia":
+				{
+					target: target,
+					adapter: OwnHxcpp,
+					cwd: cwd,
+					arguments: Hxcpp.cppia(config, haxeArgs, cwd, toolchain),
+					filters: []
+				};
 			case other:
 				throw new LaunchError('Debugging $other builds isn\'t supported yet. To debug this build\'s macros, set "target": "eval".');
 		}
 	}
+
+	/** The outputs a debugger here supports. **/
+	static final supported = ["eval", "hxcpp", "cppia", "hl"];
 
 	/**
 		The debugger a build needs: that of the first compilation in it that a debugger here supports, else
@@ -118,34 +161,27 @@ class Planner {
 		can debug its macros.
 	**/
 	public static function outputOf(args:Array<String>):Null<String> {
-		final targets = [for (compilation in compilations(args)) targetOf(compilation)];
+		final targets = [for (compilation in HaxeArgs.compilations(args)) targetOf(compilation)];
 		for (target in targets) {
-			if (target == "eval" || target == "hxcpp") {
+			if (supported.contains(target)) {
 				return target;
 			}
 		}
 		return targets.filter(target -> target != null)[0];
 	}
 
-	/**
-		The separate compilations in a build's arguments, separated by `--next`. The arguments before an
-		`--each` belong to all of them.
-	**/
-	public static function compilations(args:Array<String>):Array<Array<String>> {
-		var common = [];
-		final compilations = [[]];
-		for (arg in args) {
-			switch arg {
-				case "--each":
-					common = compilations.pop();
-					compilations.push([]);
-				case "--next":
-					compilations.push([]);
-				case _:
-					compilations[compilations.length - 1].push(arg);
-			}
+	/** The one compilation in `args` (see `HaxeArgs.compilations`) whose output needs `target`'s debugger. **/
+	public static function compilationFor(args:Array<String>, target:String):Array<String> {
+		final flag = switch target {
+			case "hxcpp": "--cpp";
+			case other: '--$other';
 		}
-		return [for (compilation in compilations) common.concat(compilation)];
+		final found = [for (compilation in HaxeArgs.compilations(args)) if (targetOf(compilation) == target) compilation];
+		return switch found {
+			case [only]: only;
+			case []: throw new LaunchError('The build has no $flag output to debug.');
+			case _: throw new LaunchError('The build has ${found.length} $flag outputs. Pick one with "haxeArgs" in the debug configuration.');
+		}
 	}
 
 	/** The debugger a compilation's output needs, from the first output flag in its arguments. **/

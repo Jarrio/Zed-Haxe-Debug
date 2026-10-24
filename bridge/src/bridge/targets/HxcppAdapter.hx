@@ -1,10 +1,9 @@
 package bridge.targets;
 
+import bridge.Build;
 import bridge.dap.Adapter;
 import bridge.dap.Message;
 import bridge.targets.Hxcpp;
-import bridge.util.Exec;
-import haxe.DynamicAccess;
 import haxe.io.Path;
 import js.Node.process;
 import js.lib.Promise;
@@ -20,7 +19,6 @@ import sys.FileSystem;
 	keeps the program paused until Zed has sent the breakpoints (`configurationDone`), gives each session
 	its own port, and stops the program when the session ends.
 **/
-@:access(bridge.util.Exec)
 class HxcppAdapter implements Adapter {
 	public var onMessage:Message->Void = _ -> {};
 	public var onClose:Int->Void = _ -> {};
@@ -28,7 +26,6 @@ class HxcppAdapter implements Adapter {
 	static inline final connectSeconds = 30;
 
 	var seq = 0;
-	var build:Null<js.node.child_process.ChildProcess>;
 	var program:Null<js.node.child_process.ChildProcess>;
 	var listener:Null<js.node.net.Server>;
 	var server:Null<HxcppServer>;
@@ -184,14 +181,14 @@ class HxcppAdapter implements Adapter {
 			return;
 		}
 		killed = true;
-		build?.kill();
+		Build.stopAll();
 		program?.kill();
 		server?.close();
 		listener?.close();
 	}
 
 	function launch(request:Message, launch:HxcppLaunch) {
-		final built:Promise<Any> = launch.build == null ? Promise.resolve(null) : runBuild(launch.build);
+		final built:Promise<Any> = launch.build == null ? Promise.resolve(null) : Build.run(launch.build, text -> output("console", text));
 		built.then(_ -> start(launch)).then(function(_) {
 			respond(request);
 			for (message in early) {
@@ -210,49 +207,6 @@ class HxcppAdapter implements Adapter {
 		});
 	}
 
-	/** Builds with Haxe, showing its output in the debug console. Rejects with a message for the user. **/
-	function runBuild(run:HaxeRun):Promise<Any> {
-		return new Promise(function(resolve, reject) {
-			final env = environment(run.env);
-			env.set("HXCPP_NO_COLOR", "1");
-			final start = Exec.prepare(run.executable, run.args, {cwd: run.cwd, env: env});
-			if (start == null) {
-				reject('Haxe (${run.executable}) was not found.');
-				return;
-			}
-			output("console", 'Building: ${commandLine(run.executable, run.args)}\n');
-			final started = Date.now().getTime();
-			final child = ChildProcess.spawn(start.file, start.args, cast {
-				cwd: run.cwd,
-				env: env,
-				windowsHide: true,
-				windowsVerbatimArguments: start.verbatim
-			});
-			build = child;
-			final errors = [];
-			child.stdout.setEncoding("utf8");
-			child.stderr.setEncoding("utf8");
-			child.stdout.on("data", (text:String) -> output("console", text));
-			child.stderr.on("data", function(text:String) {
-				errors.push(text);
-				output("console", text);
-			});
-			child.on("error", (error:js.lib.Error) -> reject('Couldn\'t run ${run.executable}: ${error.message}'));
-			child.on("close", function(code:Null<Int>, signal:Null<String>) {
-				build = null;
-				if (killed) {
-					reject("The session ended during the build.");
-				} else if (code == 0) {
-					output("console", 'Built in ${Math.round((Date.now().getTime() - started) / 100) / 10} s.\n');
-					resolve(null);
-				} else {
-					final lines = [for (line in errors.join("").split("\n")) if (StringTools.trim(line) != "") StringTools.trim(line)];
-					reject('The build failed (${exitStatus(code, signal)})${lines.length > 0 ? ": " + lines.slice(0, 3).join("\n") : "."}');
-				}
-			});
-		});
-	}
-
 	/** Runs the program and resolves once its debug server has connected. **/
 	function start(launch:HxcppLaunch):Promise<Any> {
 		if (killed) {
@@ -268,7 +222,7 @@ class HxcppAdapter implements Adapter {
 			listener.on("error", (error:js.lib.Error) -> reject('Couldn\'t wait for the program on port ${launch.port}: ${error.message}'));
 			listener.listen(launch.port, "127.0.0.1", function() {
 				final port:Int = (cast listener.address()).port;
-				final env = environment(launch.env);
+				final env = Build.environment(launch.env);
 				env.set("HXCPP_DEBUG_HOST", "127.0.0.1");
 				env.set("HXCPP_DEBUG_PORT", Std.string(port));
 				var connected = false;
@@ -304,7 +258,7 @@ class HxcppAdapter implements Adapter {
 					program = null;
 					timer.stop();
 					if (!connected) {
-						reject('$name exited (${exitStatus(code, signal)}) before connecting to the debugger. Was it built with -debug and hxcpp-debug-server?');
+						reject('$name exited (${Build.exitStatus(code, signal)}) before connecting to the debugger. Was it built with -debug and hxcpp-debug-server?');
 						return;
 					}
 					event("exited", {exitCode: code ?? 1});
@@ -483,21 +437,5 @@ class HxcppAdapter implements Adapter {
 
 	function output(category:String, text:String) {
 		event("output", {category: category, output: text});
-	}
-
-	static function environment(extra:DynamicAccess<String>):DynamicAccess<String> {
-		final env:DynamicAccess<String> = (cast process.env : DynamicAccess<String>).copy();
-		for (name => value in extra) {
-			env.set(name, value);
-		}
-		return env;
-	}
-
-	static function commandLine(executable:String, args:Array<String>):String {
-		return [for (arg in [executable].concat(args)) arg.indexOf(" ") >= 0 ? '"$arg"' : arg].join(" ");
-	}
-
-	static function exitStatus(code:Null<Int>, signal:Null<String>):String {
-		return code != null ? 'exit code $code' : 'signal $signal';
 	}
 }

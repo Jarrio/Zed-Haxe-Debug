@@ -1,6 +1,7 @@
 import bridge.Plan;
 import bridge.Settings.ProjectSettings;
 import bridge.targets.EvalCompletions;
+import bridge.targets.HashLink;
 import bridge.targets.Hxcpp;
 import haxe.DynamicAccess;
 import haxe.io.Path;
@@ -50,9 +51,9 @@ class PlanTest extends utest.Test {
 	}
 
 	function testOtherTargetsAreNotSupportedYet() {
-		final dir = Fixture.create({"build.hxml": "-cp src\n-main Main\n--hl main.hl"});
+		final dir = Fixture.create({"build.hxml": "-cp src\n-main Main\n--python main.py"});
 		final error = launchError(() -> plan(dir, {request: "launch"}));
-		Assert.stringContains("hl builds isn't supported yet", error);
+		Assert.stringContains("python builds isn't supported yet", error);
 		Assert.stringContains('"target": "eval"', error);
 	}
 
@@ -95,6 +96,72 @@ class PlanTest extends utest.Test {
 		Assert.equals(Path.join([dir, "bin", "Main-debug"]), launch.program);
 		// Built by someone else, so with a debug server that may only know its compiled-in port.
 		Assert.equals(Hxcpp.defaultPort, launch.port);
+	}
+
+	function testCppiaBuildsTheScriptAndRunsTheHost() {
+		final dir = Fixture.create({"script.hxml": "-cp src\n-main Script\n--cppia bin/script.cppia\n--cmd hl"});
+		final plan = plan(dir, {request: "launch", hxml: "script.hxml", program: "bin/host/Host-debug"});
+		Assert.equals("cppia", plan.target);
+		final launch:HxcppLaunch = plan.arguments;
+		Assert.same(["-cp", "src", "-main", "Script", "--cppia", "bin/script.cppia", "-debug"], launch.build.args);
+		Assert.equals(Path.join([dir, "bin", "host", "Host-debug"]), launch.program);
+		Assert.same([Path.join([dir, "bin", "script.cppia"])], launch.args);
+		// The host is built elsewhere.
+		Assert.equals(Hxcpp.defaultPort, launch.port);
+	}
+
+	function testCppiaNeedsAHost() {
+		final dir = Fixture.create({"script.hxml": "-main Script\n--cppia script.cppia"});
+		Assert.stringContains("runs in a host", launchError(() -> plan(dir, {request: "launch", hxml: "script.hxml"})));
+	}
+
+	function testHashLinkBuildsWithDebugInformation() {
+		final dir = Fixture.create({"build.hxml": "-cp src\n-main Main\n--hl bin/main.hl\n--cmd hl bin/main.hl"});
+		final plan = plan(dir, {request: "launch", args: ["one"]});
+		Assert.equals("hl", plan.target);
+		Assert.isTrue(plan.adapter.match(Node(_)));
+		Assert.same(["-cp", "src", "-main", "Main", "--hl", "bin/main.hl", "-debug"], plan.prelaunch.build.args);
+		final launch:HashLinkLaunch = plan.arguments;
+		Assert.equals(Path.join([dir, "bin", "main.hl"]), launch.program);
+		Assert.equals("hl", launch.hl);
+		Assert.same(["one"], launch.args);
+		Assert.equals(dir, launch.cwd);
+	}
+
+	function testHashLinkGetsTheClassPathsFromTheBuild(async:utest.Async) {
+		final dir = Fixture.create({"build.hxml": "-cp src\n-main Main\n--hl bin/main.hl"});
+		// Does what the build's helper macro does: writes the class paths, its own folder among them.
+		final haxe = Fixture.script(dir, "fake/haxe", "
+			const fs = require('fs'), path = require('path');
+			const args = process.argv.slice(2);
+			if (args[0] === '--version') { console.log('4.3.7'); process.exit(0); }
+			const helper = args[args.indexOf('-cp', args.indexOf('-debug')) + 1];
+			const file = JSON.parse(/\\((.*)\\)$/.exec(args[args.indexOf('--macro') + 1])[1]);
+			fs.writeFileSync(file, JSON.stringify([helper, path.resolve('src'), path.resolve('.'), '/std/hl/_std/', '/std/']));
+			fs.mkdirSync('bin', {recursive: true});
+			fs.writeFileSync('bin/main.hl', '');
+			console.log('built');
+		");
+		final plan = plan(dir, {request: "launch", haxePath: haxe});
+		final output = [];
+		plan.prelaunch.run(text -> output.push(text)).then(function(arguments:HashLinkLaunch) {
+			Assert.same([Path.join([dir, "src"]), dir, "/std/hl/_std/", "/std/"], arguments.classPaths);
+			Assert.isTrue(output.join("").indexOf("built") >= 0);
+			async.done();
+		}, function(error) {
+			Assert.fail(Std.string(error));
+			async.done();
+		});
+	}
+
+	function testHashLinkCIsRejected() {
+		final dir = Fixture.create({"build.hxml": "-main Main\n--hl out/main.c"});
+		Assert.stringContains("HashLink/C", launchError(() -> plan(dir, {request: "launch"})));
+	}
+
+	function testHashLinkNeedsABuild() {
+		final dir = Fixture.create({"src/Main.hx": ""});
+		Assert.stringContains("builds HashLink programs itself", launchError(() -> plan(dir, {request: "launch", program: "bin/main.hl"})));
 	}
 
 	function testHxcppNeedsTheDebugServer() {
@@ -148,7 +215,7 @@ class PlanTest extends utest.Test {
 		if (config.haxePath == null) {
 			config.haxePath = Fixture.script(dir, "haxe4/haxe", "console.log('4.3.7')");
 		}
-		return Planner.plan(config, settings ?? {}, {eval: adapter(dir), hxcppDebugServer: server(dir)}, dir, process.env);
+		return Planner.plan(config, settings ?? {}, {eval: adapter(dir), hxcppDebugServer: server(dir), hashlink: adapter(dir)}, dir, process.env);
 	}
 
 	static function server(dir:String):String {

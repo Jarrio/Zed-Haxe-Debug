@@ -2,8 +2,8 @@
 //!
 //! Like Zed-Haxe, this only downloads and starts things. Zed runs `node bridge.js` as the debug adapter;
 //! the bridge, written in Haxe under `bridge/`, works out the project, the Haxe to use and which debugger
-//! fits, then debugs: through vshaxe's eval-debugger, or for hxcpp itself, with hxcpp-debug-server
-//! compiled into the program.
+//! fits, then debugs: through vshaxe's eval-debugger or hashlink-debugger, or for hxcpp itself, with
+//! hxcpp-debug-server compiled into the program.
 
 use std::{env, fs};
 
@@ -29,6 +29,10 @@ const EVAL_ADAPTER: &str = "extension/eval-debugger/bin/index.js";
 const HXCPP_DEBUGGER_REPOSITORY: &str = "Jarrio/hxcpp-debugger";
 const HXCPP_DEBUGGER_COMMIT: &str = "14a4e50e778392ce4a8d51620b691d6b99fb6eee";
 const HXCPP_DEBUG_SERVER: &str = "hxcpp-debug-server/haxelib.json";
+
+/// hashlink-debugger, from its GitHub release (the VS Code extension's .vsix).
+const HASHLINK_DEBUGGER_VERSION: &str = "2.0.0";
+const HASHLINK_ADAPTER: &str = "extension/adapter.js";
 
 /// Zed-Haxe's language server; its `project` settings (Haxe path, project root, hxml) apply here too.
 const LANGUAGE_SERVER: &str = "haxe-language-server";
@@ -86,7 +90,19 @@ impl zed::Extension for HaxeDebugExtension {
             &format!("https://github.com/{HXCPP_DEBUGGER_REPOSITORY}/archive/{HXCPP_DEBUGGER_COMMIT}.zip"),
             HXCPP_DEBUG_SERVER,
         );
-        for (flag, path) in [("--eval", eval), ("--hxcpp-debug-server", server.map(|file| parent(&file)))] {
+        let hashlink = download(
+            "hashlink-debugger",
+            HASHLINK_DEBUGGER_VERSION,
+            &format!(
+                "https://github.com/vshaxe/hashlink-debugger/releases/download/{HASHLINK_DEBUGGER_VERSION}/haxe-hl-{HASHLINK_DEBUGGER_VERSION}.vsix"
+            ),
+            HASHLINK_ADAPTER,
+        );
+        for (flag, path) in [
+            ("--eval", eval),
+            ("--hxcpp-debug-server", server.map(|file| parent(&file))),
+            ("--hashlink", hashlink),
+        ] {
             match path {
                 Ok(path) => arguments.extend([flag.to_string(), path]),
                 Err(error) => eprintln!("haxe-debug: {error}"),

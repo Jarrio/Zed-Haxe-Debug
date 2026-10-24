@@ -1,11 +1,13 @@
 // End-to-end tests: the real bridge and eval-debugger debugging real Haxe, driven the way Zed drives them.
 //
-//   node e2e/run.js [test names...] [--haxe=PATH] [--eval=PATH] [--hxcpp-debug-server=PATH] [--bridge=PATH] [--verbose]
+//   node e2e/run.js [test names...] [--haxe=PATH] [--hl=PATH] [--eval=PATH] [--hxcpp-debug-server=PATH]
+//                   [--hashlink=PATH] [--bridge=PATH] [--verbose]
 //
-// Without --haxe, the bridge picks Haxe as it would for a user (PATH here). eval-debugger and
-// hxcpp-debug-server come from the releases src/lib.rs pins, downloaded into e2e/.adapters. Each test
-// copies its project into a temporary folder with a space in its name, which eval-debugger can't handle
-// by itself (see Eval.hx). The hxcpp tests need hxcpp (haxelib install hxcpp) and a C++ compiler.
+// Without --haxe, the bridge picks Haxe as it would for a user (PATH here). eval-debugger,
+// hxcpp-debug-server and hashlink-debugger come from the releases src/lib.rs pins, downloaded into
+// e2e/.adapters. Each test copies its project into a temporary folder with a space in its name, which
+// eval-debugger can't handle by itself (see Eval.hx). The hxcpp tests need hxcpp (haxelib install hxcpp)
+// and a C++ compiler; the HashLink tests need the HashLink VM (`hl` on PATH, or --hl) on x86-64.
 "use strict";
 const childProcess = require("child_process");
 const fs = require("fs");
@@ -136,7 +138,8 @@ async function start(env, project, config) {
   if (env.haxe) config = { ...config, haxePath: env.haxe };
   const trace = option("trace") ? ["--trace", path.resolve(option("trace"))] : [];
   const server = env.hxcppDebugServer ? ["--hxcpp-debug-server", env.hxcppDebugServer] : [];
-  const client = new Client(env.bridge, dir, ["--config", JSON.stringify(config), "--project", "{}", "--eval", env.eval, ...server, ...trace]);
+  const hashlink = env.hashlink ? ["--hashlink", env.hashlink] : [];
+  const client = new Client(env.bridge, dir, ["--config", JSON.stringify(config), "--project", "{}", "--eval", env.eval, ...server, ...hashlink, ...trace]);
   const init = await client.request("initialize", { adapterID: "Haxe", linesStartAt1: true, columnsStartAt1: true, pathFormat: "path" });
   check(init.success, `initialize failed: ${init.message}`);
   return { dir, client, config, capabilities: init.body };
@@ -299,6 +302,43 @@ const tests = {
     await client.close();
   },
 
+  async hashlink(env) {
+    const session = await start(env, "hashlink", { request: "launch", args: ["one", "two"], ...(env.hl ? { hl: env.hl } : {}) });
+    const { client, dir } = session;
+    const file = path.join(dir, "src", "Main.hx");
+    const line = breakLine(file, "main");
+    const { threadId, frame, variables } = await runToBreakpoint(session, file, line);
+    check(frame.line === line, `stopped at line ${frame.line}, expected ${line}`);
+    check(variables.greeting === '"hello"', `greeting is ${variables.greeting}`);
+    check(variables.sum === "5", `sum is ${variables.sum}`);
+    const result = await client.request("evaluate", { expression: "sum * 2", frameId: frame.id, context: "repl" });
+    check(result.success && result.body.result === "10", `sum * 2 gave ${JSON.stringify(result.body ?? result.message)}`);
+    const stepped = client.nextEvent("stopped");
+    await client.request("next", { threadId });
+    await stepped;
+    const top = (await client.request("stackTrace", { threadId })).body.stackFrames[0];
+    check(top.line === line + 1, `the step stopped at line ${top.line}, expected ${line + 1}`);
+    await client.request("continue", { threadId });
+    const exited = await client.event("exited");
+    check(exited.body.exitCode === 0, `exit code ${exited.body.exitCode}`);
+    await client.event("terminated");
+    const output = client.output();
+    check(output.includes("hello 5"), `no "hello 5" in the output: ${output}`);
+    check(output.includes("args one,two"), `the program didn't get its arguments: ${output}`);
+    check(output.includes(`cwd ${dir}${path.sep}`), `the program didn't run in the project folder: ${output}`);
+    await client.request("disconnect", {});
+    await client.close();
+  },
+
+  async hashlinkBuildError(env) {
+    const { client, config } = await start(env, "hashlink", { request: "launch", haxeArgs: ["-cp", "src", "-main", "Missing", "--hl", "bin/main.hl"] });
+    const launch = await client.request("launch", config, buildTime);
+    check(!launch.success && /The build failed/.test(launch.message) && /Missing/.test(launch.message), `unexpected launch result: ${JSON.stringify(launch)}`);
+    await client.event("terminated");
+    await client.request("disconnect", {});
+    await client.close();
+  },
+
   async unsupported(env) {
     const { client, config } = await start(env, "macro", { request: "launch" });
     const launch = await client.request("launch", config);
@@ -326,6 +366,34 @@ async function pinnedEval() {
     childProcess.execFileSync(command, extract, { stdio: "inherit" });
   }
   return indexJs;
+}
+
+/** hashlink-debugger's adapter.js from the release src/lib.rs pins. **/
+async function pinnedHashLink() {
+  const version = /const HASHLINK_DEBUGGER_VERSION: &str = "([^"]+)"/.exec(fs.readFileSync(path.join(bridgeDir, "..", "src", "lib.rs"), "utf8"))[1];
+  const dir = path.join(__dirname, ".adapters", `hashlink-debugger-${version}`);
+  const adapter = path.join(dir, "extension", "adapter.js");
+  if (!fs.existsSync(adapter)) {
+    fs.mkdirSync(dir, { recursive: true });
+    const vsix = path.join(dir, "hashlink.vsix");
+    console.log(`downloading hashlink-debugger ${version}`);
+    await download(`https://github.com/vshaxe/hashlink-debugger/releases/download/${version}/haxe-hl-${version}.vsix`, vsix);
+    const [command, extract] = process.platform === "win32" ? ["tar", ["-xf", vsix, "-C", dir, "extension"]] : ["unzip", ["-o", "-q", vsix, "extension/*", "-d", dir]];
+    childProcess.execFileSync(command, extract, { stdio: "inherit" });
+  }
+  return adapter;
+}
+
+/** Why the HashLink tests can't run here, or null when they can. **/
+function hashlinkMissing(hl) {
+  // hashlink-debugger's native module is built for x86-64 only.
+  if (process.arch !== "x64") return `hashlink-debugger needs x86-64, this is ${process.arch}`;
+  try {
+    childProcess.execFileSync(hl ?? "hl", ["--version"], { stdio: "ignore" });
+    return null;
+  } catch {
+    return "the HashLink VM isn't installed (hl on PATH, or --hl)";
+  }
 }
 
 /** hxcpp-debug-server from the commit src/lib.rs pins. **/
@@ -374,10 +442,13 @@ function download(url, file, redirects = 5) {
 
 async function main() {
   const hxcpp = hxcppInstalled();
+  const noHashLink = hashlinkMissing(option("hl"));
   const env = {
     haxe: option("haxe"),
+    hl: option("hl"),
     eval: option("eval") ?? (await pinnedEval()),
     hxcppDebugServer: option("hxcpp-debug-server") ?? (hxcpp ? await pinnedHxcppDebugServer() : undefined),
+    hashlink: option("hashlink") ?? (noHashLink ? undefined : await pinnedHashLink()),
     bridge: option("bridge") ?? path.join(bridgeDir, "bin", "bridge.js"),
   };
   let failed = 0;
@@ -385,6 +456,10 @@ async function main() {
     if (only.length > 0 && !only.includes(name)) continue;
     if (name.startsWith("hxcpp") && !hxcpp) {
       console.log(`skip ${name}: hxcpp isn't installed (haxelib install hxcpp)`);
+      continue;
+    }
+    if (name.startsWith("hashlink") && noHashLink) {
+      console.log(`skip ${name}: ${noHashLink}`);
       continue;
     }
     try {

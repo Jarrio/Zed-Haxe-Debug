@@ -106,6 +106,14 @@ class HxOverrides {
 		}
 		return s.substr(pos,len);
 	}
+	static remove(a,obj) {
+		let i = a.indexOf(obj);
+		if(i == -1) {
+			return false;
+		}
+		a.splice(i,1);
+		return true;
+	}
 	static now() {
 		return Date.now();
 	}
@@ -224,6 +232,104 @@ class StringTools {
 	}
 }
 StringTools.__name__ = true;
+class bridge_Build {
+	static run(run,output,hidden) {
+		return new Promise(function(resolve,reject) {
+			let env = bridge_Build.environment(run.env);
+			env["HXCPP_NO_COLOR"] = "1";
+			let tmp = hidden;
+			let start = bridge_util_Exec.prepare(run.executable,run.args.concat(tmp != null ? tmp : []),{ cwd : run.cwd, env : env});
+			if(start == null) {
+				reject("Haxe (" + run.executable + ") was not found.");
+				return;
+			}
+			output("Building: " + bridge_Build.commandLine(run.executable,run.args) + "\n");
+			let started = new Date().getTime();
+			let child = js_node_ChildProcess.spawn(start.file,start.args,{ cwd : run.cwd, env : env, windowsHide : true, windowsVerbatimArguments : start.verbatim});
+			bridge_Build.running.push(child);
+			let errors = [];
+			child.stdout.setEncoding("utf8");
+			child.stderr.setEncoding("utf8");
+			child.stdout.on("data",function(text) {
+				output(text);
+			});
+			child.stderr.on("data",function(text) {
+				errors.push(text);
+				output(text);
+			});
+			child.on("error",function(error) {
+				reject("Couldn't run " + run.executable + ": " + error.message);
+			});
+			child.on("close",function(code,signal) {
+				HxOverrides.remove(bridge_Build.running,child);
+				if(bridge_Build.stopped) {
+					reject("The session ended during the build.");
+				} else if(code == 0) {
+					output("Built in " + Math.round((new Date().getTime() - started) / 100) / 10 + " s.\n");
+					resolve(null);
+				} else {
+					let _g = [];
+					let _g1 = 0;
+					let _g2 = errors.join("").split("\n");
+					while(_g1 < _g2.length) {
+						let line = _g2[_g1];
+						++_g1;
+						if(StringTools.trim(line) != "") {
+							_g.push(StringTools.trim(line));
+						}
+					}
+					let lines = _g;
+					reject("The build failed (" + bridge_Build.exitStatus(code,signal) + ")" + (lines.length > 0 ? ": " + lines.slice(0,3).join("\n") : "."));
+				}
+			});
+		});
+	}
+	static stopAll() {
+		bridge_Build.stopped = true;
+		let _g = 0;
+		let _g1 = bridge_Build.running;
+		while(_g < _g1.length) {
+			let child = _g1[_g];
+			++_g;
+			child.kill();
+		}
+	}
+	static environment(extra) {
+		let env = Reflect.copy(process.env);
+		let access = extra;
+		let _g_access = access;
+		let _g_keys = Reflect.fields(access);
+		let _g_index = 0;
+		while(_g_index < _g_keys.length) {
+			let key = _g_keys[_g_index++];
+			let _g_value = _g_access[key];
+			let _g_key = key;
+			let name = _g_key;
+			let value = _g_value;
+			env[name] = value;
+		}
+		return env;
+	}
+	static commandLine(executable,args) {
+		let _g = [];
+		let _g1 = 0;
+		let _g2 = [executable].concat(args);
+		while(_g1 < _g2.length) {
+			let arg = _g2[_g1];
+			++_g1;
+			_g.push(arg.indexOf(" ") >= 0 ? "\"" + arg + "\"" : arg);
+		}
+		return _g.join(" ");
+	}
+	static exitStatus(code,signal) {
+		if(code != null) {
+			return "exit code " + code;
+		} else {
+			return "signal " + signal;
+		}
+	}
+}
+bridge_Build.__name__ = true;
 class bridge_Log {
 	static info(message) {
 		process.stderr.write("[haxe-debug] " + message + "\n");
@@ -275,6 +381,9 @@ class bridge_Main {
 			case "--eval":
 				adapters.eval = args[++i];
 				break;
+			case "--hashlink":
+				adapters.hashlink = args[++i];
+				break;
 			case "--hxcpp-debug-server":
 				adapters.hxcppDebugServer = args[++i];
 				break;
@@ -319,6 +428,9 @@ class haxe_Exception extends Error {
 		this.message = message;
 		this.__previousException = previous;
 		this.__nativeException = native != null ? native : this;
+	}
+	unwrap() {
+		return this.__nativeException;
 	}
 	toString() {
 		return this.get_message();
@@ -374,7 +486,7 @@ class bridge_Planner {
 		let output = bridge_Planner.outputOf(bridge_project_Hxml.expand(haxeArgs,cwd));
 		let tmp = config.target;
 		let tmp1 = tmp != null ? tmp : output;
-		let target = tmp1 != null ? tmp1 : prebuilt ? "hxcpp" : "eval";
+		let target = tmp1 != null ? tmp1 : prebuilt ? haxe_io_Path.extension(config.program) == "hl" ? "hl" : "hxcpp" : "eval";
 		let tmp2 = bridge_toolchain_Haxerc.find(projectRoot,workspaceRoot);
 		let toolchain = bridge_toolchain_Toolchain.resolve({ workspaceRoot : workspaceRoot, projectRoot : projectRoot, haxerc : tmp2 != null ? tmp2.data : null, providerHaxePath : null, env : env},config.haxePath == null ? settings : { haxePath : config.haxePath});
 		let _g = 0;
@@ -385,8 +497,13 @@ class bridge_Planner {
 			bridge_Log.info(note);
 		}
 		switch(target) {
+		case "cppia":
+			return { target : target, adapter : bridge_AdapterKind.OwnHxcpp, cwd : cwd, 'arguments' : bridge_targets_Hxcpp.cppia(config,haxeArgs,cwd,toolchain), filters : []};
 		case "eval":
 			return { target : target, adapter : bridge_AdapterKind.Node(bridge_Planner.installed(adapters.eval,"eval-debugger")), cwd : cwd, 'arguments' : bridge_targets_Eval.arguments(config,haxeArgs,output,toolchain), filters : bridge_targets_Eval.filters(toolchain)};
+		case "hl":
+			let launch = bridge_targets_HashLink.launch(config,haxeArgs,cwd,toolchain);
+			return { target : target, adapter : bridge_AdapterKind.Node(bridge_Planner.installed(adapters.hashlink,"hashlink-debugger")), cwd : cwd, 'arguments' : launch.arguments, filters : [new bridge_dap_BodylessResponses()], prelaunch : bridge_targets_HashLink.prelaunch(launch.arguments,launch.build)};
 		case "hxcpp":
 			return { target : target, adapter : bridge_AdapterKind.OwnHxcpp, cwd : cwd, 'arguments' : bridge_targets_Hxcpp.launch(config,haxeArgs,cwd,toolchain,adapters.hxcppDebugServer), filters : []};
 		default:
@@ -397,7 +514,7 @@ class bridge_Planner {
 	static outputOf(args) {
 		let _g = [];
 		let _g1 = 0;
-		let _g2 = bridge_Planner.compilations(args);
+		let _g2 = bridge_project_HaxeArgs.compilations(args);
 		while(_g1 < _g2.length) {
 			let compilation = _g2[_g1];
 			++_g1;
@@ -408,7 +525,7 @@ class bridge_Planner {
 		while(_g3 < targets.length) {
 			let target = targets[_g3];
 			++_g3;
-			if(target == "eval" || target == "hxcpp") {
+			if(bridge_Planner.supported.includes(target)) {
 				return target;
 			}
 		}
@@ -424,33 +541,34 @@ class bridge_Planner {
 		}
 		return _g4[0];
 	}
-	static compilations(args) {
-		let common = [];
-		let compilations = [[]];
-		let _g = 0;
-		while(_g < args.length) {
-			let arg = args[_g];
-			++_g;
-			switch(arg) {
-			case "--each":
-				common = compilations.pop();
-				compilations.push([]);
-				break;
-			case "--next":
-				compilations.push([]);
-				break;
-			default:
-				compilations[compilations.length - 1].push(arg);
+	static compilationFor(args,target) {
+		let flag;
+		if(target == "hxcpp") {
+			flag = "--cpp";
+		} else {
+			let other = target;
+			flag = "--" + other;
+		}
+		let _g = [];
+		let _g1 = 0;
+		let _g2 = bridge_project_HaxeArgs.compilations(args);
+		while(_g1 < _g2.length) {
+			let compilation = _g2[_g1];
+			++_g1;
+			if(bridge_Planner.targetOf(compilation) == target) {
+				_g.push(compilation);
 			}
 		}
-		let _g1 = [];
-		let _g2 = 0;
-		while(_g2 < compilations.length) {
-			let compilation = compilations[_g2];
-			++_g2;
-			_g1.push(common.concat(compilation));
+		let found = _g;
+		switch(found.length) {
+		case 0:
+			throw new bridge_LaunchError("The build has no " + flag + " output to debug.");
+		case 1:
+			let only = found[0];
+			return only;
+		default:
+			throw new bridge_LaunchError("The build has " + found.length + " " + flag + " outputs. Pick one with \"haxeArgs\" in the debug configuration.");
 		}
-		return _g1;
 	}
 	static targetOf(args) {
 		let _g = 0;
@@ -635,11 +753,29 @@ class bridge_Session {
 			this.answer(message);
 			return;
 		}
+		let _gthis = this;
 		if(message.type == "request" && message.command == "launch") {
-			message.arguments = this.plan.arguments;
-			bridge_Log.message("bridge (launch as sent to the debugger)",message);
+			let prelaunch = this.plan.prelaunch;
+			if(prelaunch != null) {
+				prelaunch.run(function(text) {
+					_gthis.send({ seq : 0, type : "event", event : "output", body : { category : "console", output : text}});
+				}).then(function($arguments) {
+					_gthis.launch(message,$arguments,$debugger);
+				},function(error) {
+					_gthis.respond(message,null,Std.string(error));
+					_gthis.send({ seq : 0, type : "event", event : "terminated"});
+				});
+				return;
+			}
+			this.launch(message,this.plan.arguments,$debugger);
+			return;
 		}
 		$debugger.send(message);
+	}
+	launch(request,$arguments,$debugger) {
+		request.arguments = $arguments;
+		bridge_Log.message("bridge (launch as sent to the debugger)",request);
+		$debugger.send(request);
 	}
 	answer(request) {
 		if(request.type != "request") {
@@ -686,6 +822,7 @@ class bridge_Session {
 			return;
 		}
 		this.exiting = true;
+		bridge_Build.stopAll();
 		let tmp = this.debugger;
 		if(tmp != null) {
 			tmp.kill();
@@ -780,6 +917,104 @@ class bridge_dap_NodeAdapter {
 	}
 }
 bridge_dap_NodeAdapter.__name__ = true;
+class bridge_project_HaxeArgs {
+	static compilations(args) {
+		let common = [];
+		let compilations = [[]];
+		let _g = 0;
+		while(_g < args.length) {
+			let arg = args[_g];
+			++_g;
+			switch(arg) {
+			case "--each":
+				common = compilations.pop();
+				compilations.push([]);
+				break;
+			case "--next":
+				compilations.push([]);
+				break;
+			default:
+				compilations[compilations.length - 1].push(arg);
+			}
+		}
+		let _g1 = [];
+		let _g2 = 0;
+		while(_g2 < compilations.length) {
+			let compilation = compilations[_g2];
+			++_g2;
+			_g1.push(common.concat(compilation));
+		}
+		return _g1;
+	}
+	static withoutCommands(args) {
+		let result = [];
+		let i = 0;
+		while(i < args.length) {
+			if(args[i] == "--cmd" || args[i] == "-cmd") {
+				i += 2;
+				continue;
+			}
+			result.push(args[i]);
+			++i;
+		}
+		return result;
+	}
+	static output(args,flags,cwd) {
+		let dir = cwd;
+		let _g = 0;
+		let _g1 = args.length - 1;
+		while(_g < _g1) {
+			let i = _g++;
+			if(args[i] == "--cwd") {
+				dir = bridge_project_HaxeArgs.absolute(dir,args[i + 1]);
+			} else if(flags.includes(args[i])) {
+				return bridge_project_HaxeArgs.absolute(dir,args[i + 1]);
+			}
+		}
+		return null;
+	}
+	static value(args,flags) {
+		let _g = 0;
+		let _g1 = args.length - 1;
+		while(_g < _g1) {
+			let i = _g++;
+			if(flags.includes(args[i])) {
+				return args[i + 1];
+			}
+		}
+		return null;
+	}
+	static usesLibrary(args,name) {
+		let _g = 0;
+		let _g1 = args.length - 1;
+		while(_g < _g1) {
+			let i = _g++;
+			if((args[i] == "-lib" || args[i] == "-L" || args[i] == "--library") && args[i + 1].split(":")[0] == name) {
+				return true;
+			}
+		}
+		return false;
+	}
+	static define(args,name) {
+		let value = null;
+		let _g = 0;
+		let _g1 = args.length - 1;
+		while(_g < _g1) {
+			let i = _g++;
+			if(args[i] == "-D" || args[i] == "--define") {
+				let parts = args[i + 1].split("=");
+				if(parts[0] == name) {
+					value = parts.length > 1 ? parts.slice(1).join("=") : "1";
+				}
+			}
+		}
+		return value;
+	}
+	static absolute(base,path) {
+		return haxe_io_Path.normalize(haxe_io_Path.isAbsolute(path) ? path : haxe_io_Path.join([base,path]));
+	}
+}
+bridge_project_HaxeArgs.__name__ = true;
 class bridge_project_Hxml {
 	static parse(text) {
 		let args = [];
@@ -931,6 +1166,63 @@ class bridge_targets_EvalThreads {
 	}
 }
 bridge_targets_EvalThreads.__name__ = true;
+class bridge_targets_HashLink {
+	static launch(config,haxeArgs,cwd,toolchain) {
+		if(haxeArgs.length == 0) {
+			throw new bridge_LaunchError("The debugger builds HashLink programs itself, to know where their files are. Set \"hxml\" or \"haxeArgs\".");
+		}
+		if(toolchain.major > 0 && toolchain.major < 4) {
+			throw new bridge_LaunchError("Debugging HashLink needs Haxe 4 or newer; " + toolchain.path + " is " + toolchain.version + ".");
+		}
+		let args = bridge_project_HaxeArgs.withoutCommands(bridge_Planner.compilationFor(bridge_project_Hxml.expand(haxeArgs,cwd),"hl"));
+		let output = bridge_project_HaxeArgs.output(args,["-hl","--hl"],cwd);
+		if(output != null && haxe_io_Path.extension(output) == "c") {
+			throw new bridge_LaunchError("This build makes C code for HashLink/C, which runs without the HashLink VM and its debugger. Debug a build to a .hl file.");
+		}
+		let $arguments = config.program != null ? bridge_Planner.absolute(cwd,config.program) : output;
+		let tmp = config.hl;
+		let tmp1 = config.args;
+		let tmp2 = config.env;
+		let arguments1 = { cwd : cwd, program : $arguments, hl : tmp != null ? tmp : "hl", args : tmp1 != null ? tmp1 : [], env : tmp2 != null ? tmp2 : { }};
+		if(config.port != null) {
+			arguments1.port = config.port;
+		}
+		return { 'arguments' : arguments1, build : { executable : toolchain.path, args : args.concat(["-debug"]), cwd : cwd, env : toolchain.env}};
+	}
+	static prelaunch($arguments,build) {
+		return { build : build, run : function(output) {
+			let dir = js_node_Fs.mkdtempSync(haxe_io_Path.join([js_node_Os.tmpdir(),"haxe-debug-"]));
+			let file = haxe_io_Path.join([dir,"classpaths.json"]);
+			sys_FileSystem.createDirectory(haxe_io_Path.join([dir,"zed","haxedebug"]));
+			js_node_Fs.writeFileSync(haxe_io_Path.join([dir,"zed","haxedebug","ClassPaths.hx"]),bridge_targets_HashLink.helperSource);
+			let cleanUp = function() {
+				require('fs').rmSync(dir, {recursive: true, force: true});
+			};
+			return bridge_Build.run(build,output,["-cp",dir,"--macro","" + bridge_targets_HashLink.helper + ".write(" + JSON.stringify(file) + ")"]).then(function(_) {
+				let paths = JSON.parse(js_node_Fs.readFileSync(file,{ encoding : "utf8"}));
+				cleanUp();
+				let _g = [];
+				let _g1 = 0;
+				while(_g1 < paths.length) {
+					let path = paths[_g1];
+					++_g1;
+					if(haxe_io_Path.normalize(path) != haxe_io_Path.normalize(dir)) {
+						_g.push(path);
+					}
+				}
+				$arguments.classPaths = _g;
+				if(!sys_FileSystem.exists($arguments.program)) {
+					return Promise.reject("The build didn't make " + $arguments.program + ". If it writes the program elsewhere, set \"program\" in the debug configuration.");
+				}
+				return $arguments;
+			},function(error) {
+				cleanUp();
+				return Promise.reject(error);
+			});
+		}};
+	}
+}
+bridge_targets_HashLink.__name__ = true;
 class bridge_targets_Hxcpp {
 	static launch(config,haxeArgs,cwd,toolchain,server) {
 		let program = config.program;
@@ -944,8 +1236,8 @@ class bridge_targets_Hxcpp {
 		if(toolchain.major > 0 && toolchain.major < 4) {
 			throw new bridge_LaunchError("Debugging hxcpp needs Haxe 4 or newer; " + toolchain.path + " is " + toolchain.version + ".");
 		}
-		let args = bridge_targets_Hxcpp.withoutCommands(bridge_targets_Hxcpp.cppCompilation(bridge_project_Hxml.expand(haxeArgs,cwd)));
-		let ownServer = bridge_targets_Hxcpp.usesLibrary(args,"hxcpp-debug-server");
+		let args = bridge_project_HaxeArgs.withoutCommands(bridge_Planner.compilationFor(bridge_project_Hxml.expand(haxeArgs,cwd),"hxcpp"));
+		let ownServer = bridge_project_HaxeArgs.usesLibrary(args,"hxcpp-debug-server");
 		if(!ownServer && server == null) {
 			throw new bridge_LaunchError("hxcpp-debug-server" + " isn't installed, and the build doesn't use it (-lib " + "hxcpp-debug-server" + ").");
 		}
@@ -956,7 +1248,7 @@ class bridge_targets_Hxcpp {
 			extra.push("--macro");
 			extra.push("hxcpp.debug.jsonrpc.Macro.injectServer()");
 		}
-		let tmp = bridge_targets_Hxcpp.define(args,"HXCPP_DEBUG_PORT");
+		let tmp = bridge_project_HaxeArgs.define(args,"HXCPP_DEBUG_PORT");
 		let definedPort = Std.parseInt(tmp != null ? tmp : "");
 		let tmp1 = { executable : toolchain.path, args : args.concat(extra), cwd : cwd, env : toolchain.env};
 		let tmp2 = program != null ? bridge_Planner.absolute(cwd,program) : bridge_targets_Hxcpp.executable(args,cwd);
@@ -974,103 +1266,39 @@ class bridge_targets_Hxcpp {
 		}
 		return { build : tmp1, program : tmp2, args : tmp3 != null ? tmp3 : [], cwd : cwd, env : tmp4 != null ? tmp4 : { }, port : tmp6};
 	}
-	static cppCompilation(args) {
-		let _g = [];
-		let _g1 = 0;
-		let _g2 = bridge_Planner.compilations(args);
-		while(_g1 < _g2.length) {
-			let compilation = _g2[_g1];
-			++_g1;
-			if(bridge_Planner.targetOf(compilation) == "hxcpp") {
-				_g.push(compilation);
-			}
+	static cppia(config,haxeArgs,cwd,toolchain) {
+		let host = config.program;
+		if(host == null) {
+			throw new bridge_LaunchError("A cppia script runs in a host. Set \"program\" to one built for debugging: an hxcpp -debug build with -D scriptable and " + "hxcpp-debug-server" + ".");
 		}
-		let cpp = _g;
-		switch(cpp.length) {
-		case 0:
-			throw new bridge_LaunchError("The build has no --cpp output to debug.");
-		case 1:
-			let only = cpp[0];
-			return only;
-		default:
-			throw new bridge_LaunchError("The build compiles C++ " + cpp.length + " times. Pick one with \"haxeArgs\" in the debug configuration.");
-		}
-	}
-	static withoutCommands(args) {
-		let result = [];
-		let i = 0;
-		while(i < args.length) {
-			if(args[i] == "--cmd" || args[i] == "-cmd") {
-				i += 2;
-				continue;
-			}
-			result.push(args[i]);
-			++i;
-		}
-		return result;
+		let args = bridge_project_HaxeArgs.withoutCommands(bridge_Planner.compilationFor(bridge_project_Hxml.expand(haxeArgs,cwd),"cppia"));
+		let script = bridge_project_HaxeArgs.output(args,["--cppia"],cwd);
+		let tmp = { executable : toolchain.path, args : args.concat(["-debug"]), cwd : cwd, env : toolchain.env};
+		let tmp1 = bridge_Planner.absolute(cwd,host);
+		let tmp2 = config.args;
+		let tmp3 = config.env;
+		let tmp4 = config.port;
+		return { build : tmp, program : tmp1, args : tmp2 != null ? tmp2 : [script], cwd : cwd, env : tmp3 != null ? tmp3 : { }, port : tmp4 != null ? tmp4 : 6972};
 	}
 	static executable(args,cwd) {
-		let dir = cwd;
-		let output = null;
-		let main = null;
-		let i = 0;
-		while(i < args.length - 1) {
-			switch(args[i]) {
-			case "--cpp":case "-cpp":
-				output = bridge_Planner.absolute(dir,args[i + 1]);
-				break;
-			case "--cwd":
-				dir = bridge_Planner.absolute(dir,args[i + 1]);
-				break;
-			case "--main":case "-m":case "-main":
-				main = args[i + 1];
-				break;
-			default:
-			}
-			++i;
-		}
+		let output = bridge_project_HaxeArgs.output(args,["-cpp","--cpp"],cwd);
 		if(output == null) {
 			throw new bridge_LaunchError("The build has no --cpp output to debug.");
 		}
 		let name;
-		let tmp = bridge_targets_Hxcpp.define(args,"HAXE_OUTPUT_FILE");
+		let tmp = bridge_project_HaxeArgs.define(args,"HAXE_OUTPUT_FILE");
 		if(tmp != null) {
 			name = tmp;
 		} else {
+			let main = bridge_project_HaxeArgs.value(args,["-main","--main","-m"]);
 			if(main == null) {
 				throw new bridge_LaunchError("The build has no -main class, so it makes no program to run. Set \"program\" in the debug configuration.");
 			}
 			let name1 = main.split(".").pop();
-			let tmp = bridge_targets_Hxcpp.define(args,"DEBUGSUFFIX");
+			let tmp = bridge_project_HaxeArgs.define(args,"DEBUGSUFFIX");
 			name = name1 + (tmp != null ? tmp : "-debug");
 		}
 		return haxe_io_Path.join([output,process.platform == "win32" ? "" + name + ".exe" : name]);
-	}
-	static usesLibrary(args,name) {
-		let _g = 0;
-		let _g1 = args.length - 1;
-		while(_g < _g1) {
-			let i = _g++;
-			if((args[i] == "-lib" || args[i] == "-L" || args[i] == "--library") && args[i + 1].split(":")[0] == name) {
-				return true;
-			}
-		}
-		return false;
-	}
-	static define(args,name) {
-		let value = null;
-		let _g = 0;
-		let _g1 = args.length - 1;
-		while(_g < _g1) {
-			let i = _g++;
-			if(args[i] == "-D" || args[i] == "--define") {
-				let parts = args[i + 1].split("=");
-				if(parts[0] == name) {
-					value = parts.length > 1 ? parts.slice(1).join("=") : "1";
-				}
-			}
-		}
-		return value;
 	}
 }
 bridge_targets_Hxcpp.__name__ = true;
@@ -1279,26 +1507,25 @@ class bridge_targets_HxcppAdapter {
 			return;
 		}
 		this.killed = true;
-		let tmp = this.build;
+		bridge_Build.stopAll();
+		let tmp = this.program;
 		if(tmp != null) {
 			tmp.kill();
 		}
-		let tmp1 = this.program;
+		let tmp1 = this.server;
 		if(tmp1 != null) {
-			tmp1.kill();
+			tmp1.close();
 		}
-		let tmp2 = this.server;
+		let tmp2 = this.listener;
 		if(tmp2 != null) {
 			tmp2.close();
 		}
-		let tmp3 = this.listener;
-		if(tmp3 != null) {
-			tmp3.close();
-		}
 	}
 	launch(request,launch) {
-		let built = launch.build == null ? Promise.resolve(null) : this.runBuild(launch.build);
 		let _gthis = this;
+		let built = launch.build == null ? Promise.resolve(null) : bridge_Build.run(launch.build,function(text) {
+			_gthis.output("console",text);
+		});
 		built.then(function(_) {
 			return _gthis.start(launch);
 		}).then(function(_) {
@@ -1326,57 +1553,6 @@ class bridge_targets_HxcppAdapter {
 			_gthis.finish();
 		});
 	}
-	runBuild(run) {
-		let _gthis = this;
-		return new Promise(function(resolve,reject) {
-			let env = bridge_targets_HxcppAdapter.environment(run.env);
-			env["HXCPP_NO_COLOR"] = "1";
-			let start = bridge_util_Exec.prepare(run.executable,run.args,{ cwd : run.cwd, env : env});
-			if(start == null) {
-				reject("Haxe (" + run.executable + ") was not found.");
-				return;
-			}
-			_gthis.output("console","Building: " + bridge_targets_HxcppAdapter.commandLine(run.executable,run.args) + "\n");
-			let started = new Date().getTime();
-			let child = js_node_ChildProcess.spawn(start.file,start.args,{ cwd : run.cwd, env : env, windowsHide : true, windowsVerbatimArguments : start.verbatim});
-			_gthis.build = child;
-			let errors = [];
-			child.stdout.setEncoding("utf8");
-			child.stderr.setEncoding("utf8");
-			child.stdout.on("data",function(text) {
-				_gthis.output("console",text);
-			});
-			child.stderr.on("data",function(text) {
-				errors.push(text);
-				_gthis.output("console",text);
-			});
-			child.on("error",function(error) {
-				reject("Couldn't run " + run.executable + ": " + error.message);
-			});
-			child.on("close",function(code,signal) {
-				_gthis.build = null;
-				if(_gthis.killed) {
-					reject("The session ended during the build.");
-				} else if(code == 0) {
-					_gthis.output("console","Built in " + Math.round((new Date().getTime() - started) / 100) / 10 + " s.\n");
-					resolve(null);
-				} else {
-					let _g = [];
-					let _g1 = 0;
-					let _g2 = errors.join("").split("\n");
-					while(_g1 < _g2.length) {
-						let line = _g2[_g1];
-						++_g1;
-						if(StringTools.trim(line) != "") {
-							_g.push(StringTools.trim(line));
-						}
-					}
-					let lines = _g;
-					reject("The build failed (" + bridge_targets_HxcppAdapter.exitStatus(code,signal) + ")" + (lines.length > 0 ? ": " + lines.slice(0,3).join("\n") : "."));
-				}
-			});
-		});
-	}
 	start(launch) {
 		if(this.killed) {
 			return Promise.reject("The session ended.");
@@ -1394,7 +1570,7 @@ class bridge_targets_HxcppAdapter {
 			});
 			listener.listen(launch.port,"127.0.0.1",function() {
 				let port = listener.address().port;
-				let env = bridge_targets_HxcppAdapter.environment(launch.env);
+				let env = bridge_Build.environment(launch.env);
 				env["HXCPP_DEBUG_HOST"] = "127.0.0.1";
 				env["HXCPP_DEBUG_PORT"] = port == null ? "null" : "" + port;
 				let connected = false;
@@ -1433,7 +1609,7 @@ class bridge_targets_HxcppAdapter {
 					_gthis.program = null;
 					timer.stop();
 					if(!connected) {
-						reject("" + name + " exited (" + bridge_targets_HxcppAdapter.exitStatus(code,signal) + ") before connecting to the debugger. Was it built with -debug and hxcpp-debug-server?");
+						reject("" + name + " exited (" + bridge_Build.exitStatus(code,signal) + ") before connecting to the debugger. Was it built with -debug and hxcpp-debug-server?");
 						return;
 					}
 					let tmp = code;
@@ -1605,40 +1781,6 @@ class bridge_targets_HxcppAdapter {
 			variable.namedVariables = info.namedVariables;
 		}
 		return variable;
-	}
-	static environment(extra) {
-		let env = Reflect.copy(process.env);
-		let access = extra;
-		let _g_access = access;
-		let _g_keys = Reflect.fields(access);
-		let _g_index = 0;
-		while(_g_index < _g_keys.length) {
-			let key = _g_keys[_g_index++];
-			let _g_value = _g_access[key];
-			let _g_key = key;
-			let name = _g_key;
-			let value = _g_value;
-			env[name] = value;
-		}
-		return env;
-	}
-	static commandLine(executable,args) {
-		let _g = [];
-		let _g1 = 0;
-		let _g2 = [executable].concat(args);
-		while(_g1 < _g2.length) {
-			let arg = _g2[_g1];
-			++_g1;
-			_g.push(arg.indexOf(" ") >= 0 ? "\"" + arg + "\"" : arg);
-		}
-		return _g.join(" ");
-	}
-	static exitStatus(code,signal) {
-		if(code != null) {
-			return "exit code " + code;
-		} else {
-			return "signal " + signal;
-		}
 	}
 }
 bridge_targets_HxcppAdapter.__name__ = true;
@@ -2318,6 +2460,9 @@ class haxe_ValueException extends haxe_Exception {
 		super(String(value),previous,native);
 		this.value = value;
 	}
+	unwrap() {
+		return this.value;
+	}
 }
 haxe_ValueException.__name__ = true;
 class haxe_ds_IntMap {
@@ -2778,6 +2923,7 @@ js_Boot.__name__ = true;
 var js_node_ChildProcess = require("child_process");
 var js_node_Fs = require("fs");
 var js_node_Net = require("net");
+var js_node_Os = require("os");
 var js_node_Path = require("path");
 var js_node_buffer_Buffer = require("buffer").Buffer;
 class sys_FileSystem {
@@ -2794,6 +2940,27 @@ class sys_FileSystem {
 			return js_node_Fs.statSync(path).isDirectory();
 		} catch( _g ) {
 			return false;
+		}
+	}
+	static createDirectory(path) {
+		try {
+			js_node_Fs.mkdirSync(path);
+		} catch( _g ) {
+			let e = haxe_Exception.caught(_g).unwrap();
+			if(e.code == "ENOENT") {
+				sys_FileSystem.createDirectory(js_node_Path.dirname(path));
+				js_node_Fs.mkdirSync(path);
+			} else {
+				let stat;
+				try {
+					stat = js_node_Fs.statSync(path);
+				} catch( _g ) {
+					throw e;
+				}
+				if(!stat.isDirectory()) {
+					throw e;
+				}
+			}
 		}
 	}
 }
@@ -2835,8 +3002,13 @@ if( String.fromCodePoint == null ) String.fromCodePoint = function(c) { return c
 	Date.__name__ = "Date";
 }
 js_Boot.__toStr = ({ }).toString;
+bridge_Build.running = [];
+bridge_Build.stopped = false;
+bridge_Planner.supported = ["eval","hxcpp","cppia","hl"];
 bridge_dap_BodylessResponses.commands = ["attach","launch","configurationDone","disconnect","terminate","restart","next","stepIn","stepOut","stepBack","reverseContinue","restartFrame","goto","pause","terminateThreads","cancel"];
 bridge_dap_Connection.contentLength = new EReg("Content-Length:\\s*(\\d+)","i");
+bridge_targets_HashLink.helper = "zed.haxedebug.ClassPaths";
+bridge_targets_HashLink.helperSource = "package zed.haxedebug;\n\n// Written by the Haxe debugger for Zed, for the duration of one build.\nclass ClassPaths {\n\tpublic static function write(file:String) {\n\t\tvar paths = [for (path in haxe.macro.Context.getClassPath()) sys.FileSystem.absolutePath(path == \"\" ? \".\" : path)];\n\t\tsys.io.File.saveContent(file, haxe.Json.stringify(paths));\n\t}\n}\n";
 bridge_toolchain_Toolchain.defaultOrder = ["provider","lix","haxe-manager","path"];
 bridge_util_Exec.isWindows = process.platform == "win32";
 bridge_util_Files.isWindows = process.platform == "win32";

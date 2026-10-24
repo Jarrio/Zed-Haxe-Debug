@@ -55,6 +55,21 @@ jobs:
           haxe-version: ${{ matrix.haxe }}
       # For the hxcpp tests, which also need the C++ compiler each runner has.
       - run: haxelib install hxcpp --quiet --always
+      # For the HashLink tests: HashLink 1.16, the stable release, which has no Linux binary, so Linux
+      # builds the VM. macOS runners are arm64, where the HashLink VM doesn't run; the tests skip there.
+      - name: HashLink (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          git clone --depth 1 --branch 1.16 https://github.com/HaxeFoundation/hashlink "$RUNNER_TEMP/hashlink"
+          make -C "$RUNNER_TEMP/hashlink" libhl.so hl
+          echo "$RUNNER_TEMP/hashlink" >> "$GITHUB_PATH"
+      - name: HashLink (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/hashlink.zip" https://github.com/HaxeFoundation/hashlink/releases/download/1.16/hashlink-1.16.0-win.zip
+          unzip -q "$RUNNER_TEMP/hashlink.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/hashlink-1.16.0-win" >> "$GITHUB_PATH"
       - run: node bridge/e2e/run.js
         shell: bash
 

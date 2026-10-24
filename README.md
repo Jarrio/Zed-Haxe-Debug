@@ -6,7 +6,8 @@ Breakpoints, stepping, variables and the debug console for Haxe in Zed.
 |---|---|---|
 | `--interp`, `--run`, and macros of any build | [eval-debugger](https://github.com/vshaxe/eval-debugger) | works |
 | hxcpp (`--cpp`) | [hxcpp-debug-server](https://github.com/Jarrio/hxcpp-debugger) | works |
-| HashLink | [hashlink-debugger](https://github.com/vshaxe/hashlink-debugger) | next |
+| cppia (`--cppia`), in a host built for debugging | hxcpp-debug-server | works with libhxcpp (see "cppia") |
+| HashLink (`--hl`) | [hashlink-debugger](https://github.com/vshaxe/hashlink-debugger) | works |
 
 Between Zed and the debuggers sits a **bridge written in Haxe** (`bridge/`), which:
 
@@ -17,6 +18,7 @@ Between Zed and the debuggers sits a **bridge written in Haxe** (`bridge/`), whi
   where it and Zed don't agree (see "Known issues")
 - for hxcpp, builds the program with hxcpp-debug-server, runs it, and talks to the debug server inside
   it, doing the job of the adapter in vshaxe's VS Code extension
+- for HashLink, builds the program and runs vshaxe's hashlink-debugger, unmodified
 
 ## Requirements
 
@@ -24,6 +26,8 @@ Between Zed and the debuggers sits a **bridge written in Haxe** (`bridge/`), whi
 - A Haxe language extension: [Zed-Haxe](https://github.com/Jarrio/Zed-Haxe) or the `haxe` extension in
   Zed's registry
 - For hxcpp: the hxcpp haxelib and a C++ compiler, as for any hxcpp build
+- For HashLink: the HashLink VM, on x86-64 (hashlink-debugger's native module is built for x86-64
+  only). On macOS, `hl` must be codesigned for debugging (`make codesign_osx` when building HashLink).
 
 ## Setting up
 
@@ -59,11 +63,12 @@ debug. Or describe a session in `.zed/debug.json`:
 |---|---|
 | `hxml` | The hxml to build, relative to `cwd`. |
 | `haxeArgs` | Haxe arguments, instead of `hxml`. |
-| `target` | `"eval"` or `"hxcpp"`. Without it, the build's output decides: `--interp` and `--run` use eval, `--cpp` uses hxcpp. `"eval"` on a build for another target debugs its macros and writes no output. |
-| `cwd` | Folder to run Haxe and the hxcpp program in. Default: the project folder. |
-| `program` | hxcpp: the program to run. Without `hxml` and `haxeArgs`, nothing is built, so it must already be a `-debug` build with `-lib hxcpp-debug-server`. |
-| `args`, `env` | hxcpp: the program's arguments, and environment variables added to Zed's. |
-| `port` | hxcpp: the port the program's debug server connects to (see "hxcpp" below). |
+| `target` | `"eval"`, `"hxcpp"`, `"cppia"` or `"hl"`. Without it, the build's output decides: `--interp` and `--run` use eval, `--cpp` hxcpp, `--cppia` cppia, `--hl` HashLink. `"eval"` on a build for another target debugs its macros and writes no output. |
+| `cwd` | Folder to run Haxe and the program in. Default: the project folder. |
+| `program` | hxcpp: the program to run. Without `hxml` and `haxeArgs`, nothing is built, so it must already be a `-debug` build with `-lib hxcpp-debug-server`. cppia: the host (see "cppia"). HashLink: the `.hl` file, if not the build's. |
+| `args`, `env` | hxcpp, cppia and HashLink: the program's arguments, and environment variables added to Zed's. |
+| `port` | hxcpp and cppia: the port the program's debug server connects to (see "hxcpp" below). HashLink: the port the debugger talks to the VM on (default 6112). |
+| `hl` | HashLink: the VM to run the program with. Default: `hl` on your PATH. |
 | `stopOnEntry` | eval: pause before the first line runs. |
 | `haxePath` | Haxe executable to use. |
 | `mergeScopes`, `showGeneratedVariables` | eval-debugger's own options, as in VS Code. |
@@ -71,7 +76,7 @@ debug. Or describe a session in `.zed/debug.json`:
 Without `hxml`, `haxeArgs` and `program`, the debugger uses the hxml Zed-Haxe has selected, else one that
 runs with `--interp` or `--run`, else the only one. Zed-Haxe's `project` settings (`haxePath`,
 `haxeResolvers`, `root`, `target` under `lsp.haxe-language-server.settings`) apply here too. Of an hxml
-with several compilations (`--next`), the first that eval or hxcpp can debug is the one debugged.
+with several compilations (`--next`), the first that a debugger here supports is the one debugged.
 
 ### hxcpp
 
@@ -98,17 +103,17 @@ Haxe 5 needs hxcpp from git: it refuses 4.3.2 as out of date.
 
 ### cppia
 
-The bridge doesn't build cppia scripts, but it can debug a script in a host built for debugging. Build
-the host (`-D scriptable`) as an hxcpp debug build with hxcpp-debug-server, build the script with
-`-debug`, then name both:
+A cppia script runs in a host, which has to be built for debugging: an hxcpp `-debug` build with
+`-D scriptable` and hxcpp-debug-server. Name it in `program`. The bridge builds the script's hxml with
+`-debug` and runs the host with the script's path, unless `args` says otherwise:
 
 ```json
 {
   "label": "Debug script.cppia",
   "adapter": "Haxe",
   "request": "launch",
-  "program": "bin/host/Host-debug",
-  "args": ["bin/script.cppia"]
+  "hxml": "script.hxml",
+  "program": "bin/host/Host-debug"
 }
 ```
 
@@ -122,6 +127,17 @@ server back at that point:
 
 Until the script is loaded, Zed shows its breakpoints as unverified, and they stay that way after they
 take effect.
+
+### HashLink
+
+The bridge builds the hxml with `-debug` and any `--cmd` left out, then hands hashlink-debugger the
+`.hl` file and the build's class paths, which it needs to find the files the program's debug
+information names. It runs the program with `hl` from your PATH, or the one `hl` names.
+
+Tested with HashLink 1.16, the stable release, on Haxe 4.0.5, 4.1.5, 4.2.5, 4.3.7 and the 5.0.0
+preview. With the HashLink nightly of October 2026, which calls itself 2.0.0, the program stops at
+breakpoints but hashlink-debugger 2.0.0 reads its variables wrong. HashLink/C builds (`--hl main.c`)
+don't run in the VM, so they can't be debugged here.
 
 ## Known issues
 
@@ -158,18 +174,21 @@ take effect.
   against hxcpp master of the same month, and the debug server uses it.
 - A debug build with hxcpp-debug-server doesn't exit when it runs without the debugger: the server
   waits for one to attach.
+- HashLink reports a finished step as a stop at a breakpoint.
 
 ## How it works
 
 `src/lib.rs` is a thin Rust layer: it downloads vshaxe's extension from Open VSX (eval-debugger has no
-releases of its own) and hxcpp-debug-server from GitHub, then has Zed run `node bridge.js`. The bridge
-reads the debug configuration and picks the debugger.
+releases of its own), and hxcpp-debug-server and hashlink-debugger from GitHub, then has Zed run
+`node bridge.js`. The bridge reads the debug configuration and picks the debugger.
 
 - eval: it starts eval-debugger and relays DAP messages between it and Zed, rewriting the `launch`
   request and fixing the replies Zed can't use (`bridge/src/bridge/targets/Eval*.hx`).
-- hxcpp: it answers Zed itself (`targets/HxcppAdapter.hx`). It builds the program, waits for its debug
-  server to connect over TCP, and turns each DAP request into a request to that server
+- hxcpp and cppia: it answers Zed itself (`targets/HxcppAdapter.hx`). It builds the program, waits for
+  its debug server to connect over TCP, and turns each DAP request into a request to that server
   (`targets/HxcppServer.hx`).
+- HashLink: it builds the program, asking Haxe for the class paths with a small macro on the way
+  (`targets/HashLink.hx`), then starts hashlink-debugger and relays DAP messages as for eval.
 
 ## Development
 
@@ -183,8 +202,9 @@ haxe test.hxml        # unit tests
 node e2e/run.js       # the real bridge debugging real Haxe programs; --haxe=PATH picks the Haxe
 ```
 
-The end-to-end tests skip hxcpp when it isn't installed. `--hxcpp-debug-server=PATH` tests a checkout
-of the library instead of the version `src/lib.rs` pins.
+The end-to-end tests skip hxcpp when it isn't installed, and HashLink when `hl` isn't on PATH (`--hl=PATH`
+names one). `--hxcpp-debug-server=PATH` tests a checkout of the library instead of the version
+`src/lib.rs` pins.
 
 Haxe 5 needs hxcpp from git. To test with it without changing the hxcpp your other projects use, install
 it in a local repository in this folder, and point the tests at it (they build in temporary folders,
@@ -208,4 +228,4 @@ Add `"traceFile": "/some/file.log"` to a debug configuration to log every messag
 
 ## License
 
-MIT. eval-debugger, vshaxe and hxcpp-debugger are MIT-licensed too.
+MIT. eval-debugger, vshaxe, hxcpp-debugger and hashlink-debugger are MIT-licensed too.

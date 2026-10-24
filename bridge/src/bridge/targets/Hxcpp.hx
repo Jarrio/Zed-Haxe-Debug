@@ -1,6 +1,8 @@
 package bridge.targets;
 
+import bridge.Build.HaxeRun;
 import bridge.Plan;
+import bridge.project.HaxeArgs;
 import bridge.project.Hxml;
 import bridge.toolchain.Toolchain.ResolvedToolchain;
 import haxe.DynamicAccess;
@@ -26,15 +28,6 @@ typedef HxcppLaunch = {
 		`HXCPP_DEBUG_PORT`, which only the debug server the extension brings reads.
 	**/
 	final port:Int;
-}
-
-typedef HaxeRun = {
-	final executable:String;
-	final args:Array<String>;
-	final cwd:String;
-
-	/** Added to the bridge's environment. **/
-	final env:DynamicAccess<String>;
 }
 
 /**
@@ -64,9 +57,9 @@ class Hxcpp {
 		if (toolchain.major > 0 && toolchain.major < 4) {
 			throw new LaunchError('Debugging hxcpp needs Haxe 4 or newer; ${toolchain.path} is ${toolchain.version}.');
 		}
-		final args = withoutCommands(cppCompilation(Hxml.expand(haxeArgs, cwd)));
+		final args = HaxeArgs.withoutCommands(Planner.compilationFor(Hxml.expand(haxeArgs, cwd), "hxcpp"));
 		// A build that brings its own copy of the library keeps it, and that copy's port.
-		final ownServer = usesLibrary(args, library);
+		final ownServer = HaxeArgs.usesLibrary(args, library);
 		if (!ownServer && server == null) {
 			throw new LaunchError('$library isn\'t installed, and the build doesn\'t use it (-lib $library).');
 		}
@@ -77,7 +70,7 @@ class Hxcpp {
 			extra.push("--macro");
 			extra.push("hxcpp.debug.jsonrpc.Macro.injectServer()");
 		}
-		final definedPort = Std.parseInt(define(args, "HXCPP_DEBUG_PORT") ?? "");
+		final definedPort = Std.parseInt(HaxeArgs.define(args, "HXCPP_DEBUG_PORT") ?? "");
 		return {
 			build: {executable: toolchain.path, args: args.concat(extra), cwd: cwd, env: toolchain.env},
 			program: program != null ? Planner.absolute(cwd, program) : executable(args, cwd),
@@ -88,29 +81,27 @@ class Hxcpp {
 		};
 	}
 
-	/** The one compilation in `args` that outputs C++ (see `Planner.compilations`). **/
-	public static function cppCompilation(args:Array<String>):Array<String> {
-		final cpp = [for (compilation in Planner.compilations(args)) if (Planner.targetOf(compilation) == "hxcpp") compilation];
-		return switch cpp {
-			case [only]: only;
-			case []: throw new LaunchError("The build has no --cpp output to debug.");
-			case _: throw new LaunchError('The build compiles C++ ${cpp.length} times. Pick one with "haxeArgs" in the debug configuration.');
+	/**
+		A cppia script, run in a host built for debugging: an hxcpp `-debug` build with `-D scriptable` and
+		hxcpp-debug-server. The bridge builds the script with `-debug` and runs the host, which gets the
+		script's path unless the configuration gives other arguments.
+	**/
+	public static function cppia(config:LaunchConfig, haxeArgs:Array<String>, cwd:String, toolchain:ResolvedToolchain):HxcppLaunch {
+		final host = config.program;
+		if (host == null) {
+			throw new LaunchError('A cppia script runs in a host. Set "program" to one built for debugging: an hxcpp -debug build with -D scriptable and $library.');
 		}
-	}
-
-	/** Drops `--cmd`, which would run something after the build, such as the program without the debugger. **/
-	public static function withoutCommands(args:Array<String>):Array<String> {
-		final result = [];
-		var i = 0;
-		while (i < args.length) {
-			if (args[i] == "--cmd" || args[i] == "-cmd") {
-				i += 2;
-				continue;
-			}
-			result.push(args[i]);
-			i++;
-		}
-		return result;
+		final args = HaxeArgs.withoutCommands(Planner.compilationFor(Hxml.expand(haxeArgs, cwd), "cppia"));
+		final script = HaxeArgs.output(args, ["--cppia"], cwd);
+		return {
+			build: {executable: toolchain.path, args: args.concat(["-debug"]), cwd: cwd, env: toolchain.env},
+			program: Planner.absolute(cwd, host),
+			args: config.args ?? [script],
+			cwd: cwd,
+			env: config.env ?? {},
+			// Built elsewhere, like a program named without a build.
+			port: config.port ?? defaultPort
+		};
 	}
 
 	/**
@@ -118,55 +109,17 @@ class Hxcpp {
 		`HAXE_OUTPUT_FILE` or `DEBUGSUFFIX` defines say otherwise.
 	**/
 	public static function executable(args:Array<String>, cwd:String):String {
-		var dir = cwd;
-		var output:Null<String> = null;
-		var main:Null<String> = null;
-		var i = 0;
-		while (i < args.length - 1) {
-			switch args[i] {
-				case "--cwd":
-					dir = Planner.absolute(dir, args[i + 1]);
-				case "-cpp" | "--cpp":
-					output = Planner.absolute(dir, args[i + 1]);
-				case "-main" | "--main" | "-m":
-					main = args[i + 1];
-				case _:
-			}
-			i++;
-		}
+		final output = HaxeArgs.output(args, ["-cpp", "--cpp"], cwd);
 		if (output == null) {
 			throw new LaunchError("The build has no --cpp output to debug.");
 		}
-		final name = define(args, "HAXE_OUTPUT_FILE") ?? {
+		final name = HaxeArgs.define(args, "HAXE_OUTPUT_FILE") ?? {
+			final main = HaxeArgs.value(args, ["-main", "--main", "-m"]);
 			if (main == null) {
 				throw new LaunchError('The build has no -main class, so it makes no program to run. Set "program" in the debug configuration.');
 			}
-			main.split(".").pop() + (define(args, "DEBUGSUFFIX") ?? "-debug");
+			main.split(".").pop() + (HaxeArgs.define(args, "DEBUGSUFFIX") ?? "-debug");
 		}
 		return Path.join([output, process.platform == "win32" ? '$name.exe' : name]);
-	}
-
-	/** Whether `args` add the haxelib `name`, at any version. **/
-	public static function usesLibrary(args:Array<String>, name:String):Bool {
-		for (i in 0...args.length - 1) {
-			if ((args[i] == "-lib" || args[i] == "-L" || args[i] == "--library") && args[i + 1].split(":")[0] == name) {
-				return true;
-			}
-		}
-		return false;
-	}
-
-	/** The value of the define `name` in `args` (`-D name=value`), "1" when it has none, null when it's absent. **/
-	public static function define(args:Array<String>, name:String):Null<String> {
-		var value:Null<String> = null;
-		for (i in 0...args.length - 1) {
-			if (args[i] == "-D" || args[i] == "--define") {
-				final parts = args[i + 1].split("=");
-				if (parts[0] == name) {
-					value = parts.length > 1 ? parts.slice(1).join("=") : "1";
-				}
-			}
-		}
-		return value;
 	}
 }

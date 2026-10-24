@@ -8,8 +8,8 @@
     },
     "target": {
       "type": "string",
-      "enum": ["eval", "hxcpp"],
-      "description": "Which debugger to use. Without it, the build's output decides: --interp and --run use eval, --cpp uses hxcpp. \"eval\" with any other build debugs its macros and writes no output."
+      "enum": ["eval", "hxcpp", "cppia", "hl"],
+      "description": "Which debugger to use. Without it, the build's output decides: --interp and --run use eval, --cpp hxcpp, --cppia a cppia host (see program), --hl HashLink. \"eval\" with any other build debugs its macros and writes no output."
     },
     "hxml": {
       "type": "string",
@@ -24,25 +24,29 @@
     },
     "program": {
       "type": "string",
-      "description": "hxcpp: the program to run, relative to cwd. Without hxml or haxeArgs, a program already built (with -debug and hxcpp-debug-server), so nothing is built. Default: the executable the build makes."
+      "description": "hxcpp: the program to run, relative to cwd. Without hxml or haxeArgs, a program already built (with -debug and hxcpp-debug-server), so nothing is built. Default: the executable the build makes. cppia: the host that runs the script, an hxcpp -debug build with -D scriptable and hxcpp-debug-server. HashLink: the .hl file to run. Default: the build's."
     },
     "args": {
       "type": "array",
       "items": {
         "type": "string"
       },
-      "description": "hxcpp: the program's arguments."
+      "description": "hxcpp, cppia and HashLink: the program's arguments. For cppia, default: the script's path."
     },
     "env": {
       "type": "object",
       "additionalProperties": {
         "type": "string"
       },
-      "description": "hxcpp: environment variables for the program, added to Zed's."
+      "description": "hxcpp, cppia and HashLink: environment variables for the program, added to Zed's."
     },
     "port": {
       "type": "integer",
-      "description": "hxcpp: port the program's debug server connects to. Default: a free one, or for a program built elsewhere or with its own -lib hxcpp-debug-server, that library's port (6972 unless -D HXCPP_DEBUG_PORT says otherwise)."
+      "description": "hxcpp and cppia: port the program's debug server connects to. Default: a free one, or for a program built elsewhere or with its own -lib hxcpp-debug-server, that library's port (6972 unless -D HXCPP_DEBUG_PORT says otherwise). HashLink: port the debugger talks to the VM on. Default: 6112."
+    },
+    "hl": {
+      "type": "string",
+      "description": "HashLink: the VM to run the program with. Default: hl on PATH."
     },
     "cwd": {
       "type": "string",

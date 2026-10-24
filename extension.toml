@@ -3,7 +3,7 @@ name = "Haxe Debugger"
 version = "0.1.0"
 schema_version = 1
 authors = ["Jarrio"]
-description = "Debugging for Haxe in Zed: hxcpp programs, and macros and --interp programs through eval."
+description = "Debugging for Haxe in Zed: hxcpp, HashLink, cppia, and macros and --interp programs through eval."
 repository = "https://github.com/Jarrio/Zed-Haxe-Debug"
 
 # One adapter for every Haxe target: the bridge picks the debugger from the project (see src/lib.rs).
