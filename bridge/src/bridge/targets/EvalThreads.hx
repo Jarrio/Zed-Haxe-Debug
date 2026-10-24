@@ -15,13 +15,15 @@ import js.lib.Promise;
 	and every thread event makes Zed fetch the threads, stack and variables again, which starts more
 	threads. Zed lists the threads again whenever the program stops, which is when they matter.
 **/
-class EvalThreads implements Filter {
+class EvalThreads extends Filter {
 	/** Keys of the threads, by name, from the latest thread list. **/
 	final keys:Map<String, Int> = [];
 
-	public function new() {}
+	public function new() {
+		super();
+	}
 
-	public function fromDebugger(message:Message, request:Requester):Promise<Null<Message>> {
+	override public function fromDebugger(message:Message, context:FilterContext):Promise<Null<Message>> {
 		if (message.type == "response" && message.command == "threads" && message.success == true) {
 			learn(message);
 		}
@@ -38,7 +40,7 @@ class EvalThreads implements Filter {
 			return Promise.resolve(message);
 		}
 		// A thread the bridge hasn't seen listed yet (the first stop, or a new thread).
-		return request("threads", {}).then(function(response) {
+		return context.request("threads", {}).then(function(response) {
 			learn(response);
 			if (keys.exists(name)) {
 				message.body.threadId = keys.get(name);

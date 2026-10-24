@@ -90,6 +90,23 @@ with `--interp` or `--run`, else the only one. Zed-Haxe's `project` settings (`h
 `haxeResolvers`, `root`, `target` under `lsp.haxe-language-server.settings`) apply here too. Of an hxml
 with several compilations (`--next`), the first that a debugger here supports is the one debugged.
 
+### Changing values
+
+Double-click a value in the variables list, or choose "Edit Value" from its menu, and type the new
+value, as an expression in the debug console's language:
+
+| | Locals | Fields and array items | Strings |
+|---|---|---|---|
+| eval | yes | yes | yes |
+| hxcpp | in the innermost frame | yes | yes |
+| HashLink | yes | yes | no |
+| JavaScript | yes | yes | yes |
+
+hxcpp changes a field or an item by running an assignment, such as `point.x = 40`, in the debug
+server's evaluator. HashLink can't make a new string in the program, so it can't change one. The list
+shows the new value until the program moves on. When a debugger refuses a change, the debug console
+says why; Zed itself only writes it to its log.
+
 ### hxcpp
 
 The bridge builds the hxml with `-debug` and hxcpp-debug-server added and any `--cmd` left out, then
@@ -271,7 +288,7 @@ Ceramic's C++ needs, so it hasn't been seen to stop at a breakpoint yet.
   - classes by their short name: `flixel.FlxG.width` works, `FlxG.width` doesn't
 
   A field that doesn't exist reads as `null`.
-- hxcpp can change only the local variables of the innermost frame, and stepping always steps the main
+- hxcpp can change local variables only in the innermost frame, and stepping always steps the main
   thread.
 - The Haxe 5 nightly of October 2026 can't build any program that uses `sys.thread.Thread.current()`
   against hxcpp master of the same month, and the debug server uses it.

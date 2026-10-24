@@ -1,10 +1,14 @@
 package bridge.dap;
 
+import bridge.util.ProcessTree;
 import js.Node.process;
 import js.node.Buffer;
-import js.node.ChildProcess;
 
-/** A debug adapter written for Node, such as eval-debugger: `node <script>`, speaking DAP over stdio. **/
+/**
+	A debug adapter written for Node, such as eval-debugger: `node <script>`, speaking DAP over stdio. It
+	runs in a process group of its own, so that stopping it also stops what it started, such as the Haxe
+	that eval-debugger runs.
+**/
 class NodeAdapter implements Adapter {
 	public var onMessage:Message->Void = _ -> {};
 	public var onClose:Int->Void = _ -> {};
@@ -13,7 +17,7 @@ class NodeAdapter implements Adapter {
 	final connection:Connection;
 
 	public function new(script:String, cwd:String) {
-		child = ChildProcess.spawn(process.execPath, [script], cast {cwd: cwd, windowsHide: true});
+		child = ProcessTree.spawn(process.execPath, [script], {cwd: cwd, windowsHide: true});
 		connection = new Connection(child.stdout, child.stdin);
 		connection.onMessage = message -> onMessage(message);
 		child.stderr.on("data", (chunk:Buffer) -> process.stderr.write(chunk));
@@ -33,6 +37,6 @@ class NodeAdapter implements Adapter {
 	}
 
 	public function kill() {
-		child.kill();
+		ProcessTree.kill(child);
 	}
 }

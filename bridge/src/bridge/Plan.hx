@@ -140,7 +140,7 @@ class Planner {
 					adapter: Node(installed(adapters.eval, "eval-debugger")),
 					cwd: cwd,
 					arguments: Eval.arguments(config, haxeArgs, output, toolchain),
-					filters: Eval.filters(toolchain)
+					filters: Eval.filters(config, toolchain)
 				};
 			case "hxcpp":
 				{

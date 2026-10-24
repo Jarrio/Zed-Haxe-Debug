@@ -175,6 +175,52 @@ async function runToBreakpoint({ client, config }, file, line) {
   return { threadId, frame, variables, stopped };
 }
 
+/**
+  Changes a local, an object's field and an array's item from the variables list, as Zed does: by
+  reference and name, listing the variables again after each edit. `strings` says whether the debugger
+  can make a new string.
+**/
+async function editVariables(env, config, { strings = true } = {}) {
+  const session = await start(env, "variables", { request: "launch", ...config });
+  const { client, dir } = session;
+  const file = path.join(dir, "src", "Main.hx");
+  const { threadId, frame } = await runToBreakpoint(session, file, breakLine(file, "main"));
+  const list = async (reference) => {
+    const response = await client.request("variables", { variablesReference: reference });
+    check(response.success, `variables failed: ${response.message}`);
+    return Object.fromEntries(response.body.variables.map((variable) => [variable.name, variable]));
+  };
+  const set = async (reference, name, value) => {
+    const response = await client.request("setVariable", { variablesReference: reference, name, value });
+    check(response.success, `setting ${name} to ${value} failed: ${response.message}`);
+  };
+  let scope;
+  for (const candidate of (await client.request("scopes", { frameId: frame.id })).body.scopes) {
+    if ("sum" in (await list(candidate.variablesReference))) scope = candidate.variablesReference;
+  }
+  check(scope != null, "no scope has sum");
+  await set(scope, "sum", "7");
+  let locals = await list(scope);
+  check(locals.sum.value === "7", `sum shows as ${locals.sum.value} after the edit`);
+  await set(locals.point.variablesReference, "x", "40");
+  const fields = await list(locals.point.variablesReference);
+  check(fields.x.value === "40", `point.x shows as ${fields.x.value} after the edit`);
+  const items = await list(locals.list.variablesReference);
+  const first = Object.keys(items).find((name) => /^\[?0\]?$/.test(name));
+  await set(locals.list.variablesReference, first, "100");
+  check((await list(locals.list.variablesReference))[first].value === "100", "list[0] doesn't show as 100 after the edit");
+  await set(scope, "greeting", '"bye"');
+  client.send("continue", { threadId });
+  await client.event("terminated");
+  const output = client.output();
+  // Zed only logs a refused edit.
+  check(strings || output.includes("Couldn't change greeting"), `the console doesn't say greeting wasn't changed: ${output}`);
+  const expected = `edited ${strings ? "bye" : "hello"} 7 40 [100,2,3]`;
+  check(output.includes(expected), `no "${expected}" in the output: ${output}`);
+  await client.request("disconnect", {});
+  await client.close();
+}
+
 const tests = {
   async interp(env) {
     const session = await start(env, "interp", { request: "launch" });
@@ -242,6 +288,23 @@ const tests = {
     await session.client.request("disconnect", {});
     await session.client.close();
     check(!fs.existsSync(path.join(session.dir, "bin", "main.js")), "debugging macros wrote the JS output");
+  },
+
+  async variables(env) {
+    await editVariables(env, { hxml: "interp.hxml" });
+  },
+
+  async hxcppVariables(env) {
+    await editVariables(env, { hxml: "cpp.hxml" });
+  },
+
+  // HashLink can't make new strings in the program.
+  async hashlinkVariables(env) {
+    await editVariables(env, { hxml: "hl.hxml", ...(env.hl ? { hl: env.hl } : {}) }, { strings: false });
+  },
+
+  async javascriptVariables(env) {
+    await editVariables(env, { hxml: "js.hxml" });
   },
 
   async hxcpp(env) {

@@ -9,10 +9,12 @@ import js.lib.Promise;
 	and then nothing answers any more. Zed sends one for every key typed in the debug console, so the
 	bridge tells Zed this debugger has no completions.
 **/
-class EvalCompletions implements Filter {
-	public function new() {}
+class EvalCompletions extends Filter {
+	public function new() {
+		super();
+	}
 
-	public function fromDebugger(message:Message, request:Requester):Promise<Null<Message>> {
+	override public function fromDebugger(message:Message, context:FilterContext):Promise<Null<Message>> {
 		if (message.type == "response" && message.command == "initialize" && message.body != null) {
 			message.body.supportsCompletionsRequest = false;
 		}

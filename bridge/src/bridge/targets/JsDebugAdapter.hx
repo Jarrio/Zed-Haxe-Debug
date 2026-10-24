@@ -3,10 +3,10 @@ package bridge.targets;
 import bridge.dap.Adapter;
 import bridge.dap.Connection;
 import bridge.dap.Message;
+import bridge.util.ProcessTree;
 import js.Node.process;
 import js.lib.Promise;
 import js.node.Buffer;
-import js.node.ChildProcess;
 import js.node.Net;
 
 /**
@@ -71,7 +71,8 @@ class JsDebugAdapter implements Adapter {
 	}
 
 	function start(script:String, cwd:String) {
-		final server = ChildProcess.spawn(process.execPath, [script, Std.string(port), "127.0.0.1"], cast {cwd: cwd, windowsHide: true});
+		// In a process group of its own, so that stopping it also stops the program it started.
+		final server = ProcessTree.spawn(process.execPath, [script, Std.string(port), "127.0.0.1"], {cwd: cwd, windowsHide: true});
 		this.serverProcess = server;
 		var listening = false;
 		final timer = haxe.Timer.delay(() -> if (!listening) fail('js-debug didn\'t start within $startSeconds seconds.'), startSeconds * 1000);
@@ -317,6 +318,8 @@ class JsDebugAdapter implements Adapter {
 	}
 
 	public function kill() {
-		serverProcess?.kill();
+		if (serverProcess != null) {
+			ProcessTree.kill(serverProcess);
+		}
 	}
 }

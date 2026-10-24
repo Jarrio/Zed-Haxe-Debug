@@ -11,10 +11,14 @@ import bridge.toolchain.Toolchain.ResolvedToolchain;
 **/
 class Eval {
 	/** Workarounds for the debugger and the compiler's side of it. **/
-	public static function filters(toolchain:ResolvedToolchain):Array<Filter> {
+	public static function filters(config:LaunchConfig, toolchain:ResolvedToolchain):Array<Filter> {
 		final filters:Array<Filter> = [new BodylessResponses(), new EvalThreads()];
 		if (toolchain.major >= 5) {
 			filters.push(new EvalCompletions());
+		}
+		// vshaxe's default.
+		if (config.mergeScopes ?? true) {
+			filters.push(new EvalScopes());
 		}
 		return filters;
 	}
@@ -33,8 +37,9 @@ class Eval {
 			args: args,
 			stopOnEntry: config.stopOnEntry ?? false,
 			haxeExecutable: {executable: toolchain.path, env: toolchain.env},
-			// vshaxe's defaults.
-			mergeScopes: config.mergeScopes ?? true,
+			// The bridge merges the scopes itself (see EvalScopes).
+			mergeScopes: false,
+			// vshaxe's default.
 			showGeneratedVariables: config.showGeneratedVariables ?? false,
 			trace: false
 		};

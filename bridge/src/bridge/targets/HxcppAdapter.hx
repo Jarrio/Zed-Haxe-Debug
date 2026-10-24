@@ -49,10 +49,17 @@ class HxcppAdapter implements Adapter {
 	/** What the next `pauseStop` means: a step finished, unless a pause was asked for. **/
 	var pauseReason = "pause";
 
-	/** The innermost frame of the current stop and its locals: the only variables the server can change. **/
+	/** The innermost frame of the current stop and its locals: the only locals the server can change. **/
 	var topFrame:Null<Int>;
 
 	var topLocals:Null<Int>;
+
+	/**
+		Where the values Zed has been shown since the program stopped come from, by variables reference:
+		the frame, and the expression that reads the value (`point`, `point.x`, `list[0]`), which a frame's
+		locals don't have. Fields and items change through an assignment the server's evaluator runs.
+	**/
+	final values:Map<Int, {frame:Int, expression:Null<String>}> = [];
 
 	public function new() {}
 
@@ -108,6 +115,9 @@ class HxcppAdapter implements Adapter {
 						if (frameId == topFrame && scope.name == "Locals") {
 							topLocals = scope.id;
 						}
+						if (scope.name == "Locals" || scope.name == "Members") {
+							values.set(scope.id, {frame: frameId, expression: scope.name == "Members" ? "this" : null});
+						}
 					}
 					return {scopes: [for (scope in result) {name: scope.name, variablesReference: scope.id, expensive: false}]};
 				});
@@ -119,12 +129,28 @@ class HxcppAdapter implements Adapter {
 				if (args.count != null) {
 					params.count = args.count;
 				}
-				forward(message, "getVariables", params, (result:Array<Dynamic>) -> {variables: [for (info in result) variable(info)]});
+				final parent = values.get(args.variablesReference);
+				forward(message, "getVariables", params, function(result:Array<Dynamic>) {
+					if (parent != null) {
+						for (info in result) {
+							final expression = member(parent.expression, info.name);
+							if (info.variablesReference != null && info.variablesReference > 0 && expression != null) {
+								values.set(info.variablesReference, {frame: parent.frame, expression: expression});
+							}
+						}
+					}
+					return {variables: [for (info in result) variable(info)]};
+				});
 			case "evaluate":
 				if (!stopped) {
 					respond(message, null, "The program is running. Pause it to evaluate expressions.");
 				} else {
-					forward(message, "evaluate", {expr: args.expression, frameId: args.frameId ?? topFrame}, function(info:Dynamic) {
+					final frameId:Int = args.frameId ?? topFrame;
+					forward(message, "evaluate", {expr: args.expression, frameId: frameId}, function(info:Dynamic) {
+						if (info.variablesReference != null && info.variablesReference > 0) {
+							final path = ~/^[A-Za-z_][\w.]*$/.match(args.expression) ? args.expression : '(${args.expression})';
+							values.set(info.variablesReference, {frame: frameId, expression: path});
+						}
 						final body = variable(info);
 						body.result = body.value;
 						Reflect.deleteField(body, "value");
@@ -133,10 +159,20 @@ class HxcppAdapter implements Adapter {
 					});
 				}
 			case "setVariable":
-				if (args.variablesReference != topLocals) {
+				final target = values.get(args.variablesReference);
+				final assigned = target?.expression == null ? null : member(target.expression, args.name);
+				if (args.variablesReference == topLocals) {
+					forward(message, "setVariable", {expr: args.name, value: args.value}, (result:Dynamic) -> {value: Std.string(result.value)});
+				} else if (assigned != null) {
+					forward(message, "evaluate", {expr: '$assigned = ${args.value}', frameId: target.frame}, function(info:Dynamic) {
+						final body = variable(info);
+						Reflect.deleteField(body, "name");
+						return body;
+					});
+				} else if (target != null && target.expression == null) {
 					respond(message, null, "hxcpp can only change the local variables of the innermost frame.");
 				} else {
-					forward(message, "setVariable", {expr: args.name, value: args.value}, (result:Dynamic) -> {value: Std.string(result.value)});
+					respond(message, null, 'hxcpp can\'t change ${args.name} from the variables list. An assignment in the debug console may work.');
 				}
 			case "completions":
 				if (!stopped) {
@@ -383,6 +419,7 @@ class HxcppAdapter implements Adapter {
 		stopped = false;
 		topFrame = null;
 		topLocals = null;
+		values.clear();
 	}
 
 	/** Tells Zed the session is over, once. **/
@@ -424,6 +461,21 @@ class HxcppAdapter implements Adapter {
 			frame.presentationHint = "subtle";
 		}
 		return frame;
+	}
+
+	/**
+		The expression for `name` in the value `parent` reads: a field, an array item or a map entry (the
+		server shows a StringMap's keys quoted). Without a parent, the local `name`. Null when there's none.
+	**/
+	static function member(parent:Null<String>, name:String):Null<String> {
+		final identifier = ~/^[A-Za-z_]\w*$/.match(name);
+		if (parent == null) {
+			return identifier ? name : null;
+		}
+		if (~/^-?\d+$/.match(name) || StringTools.startsWith(name, '"')) {
+			return '$parent[$name]';
+		}
+		return identifier ? '$parent.$name' : null;
 	}
 
 	static function variable(info:Dynamic):Dynamic {

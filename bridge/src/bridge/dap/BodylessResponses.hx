@@ -8,15 +8,17 @@ import js.lib.Promise;
 	fails on any body ("invalid type: map, expected unit"); eval-debugger, for one, answers
 	`configurationDone` with `{"allThreadsContinued": false}`.
 **/
-class BodylessResponses implements Filter {
+class BodylessResponses extends Filter {
 	static final commands = [
 		"attach", "launch", "configurationDone", "disconnect", "terminate", "restart", "next", "stepIn", "stepOut", "stepBack",
 		"reverseContinue", "restartFrame", "goto", "pause", "terminateThreads", "cancel"
 	];
 
-	public function new() {}
+	public function new() {
+		super();
+	}
 
-	public function fromDebugger(message:Message, request:Requester):Promise<Null<Message>> {
+	override public function fromDebugger(message:Message, context:FilterContext):Promise<Null<Message>> {
 		if (message.type == "response" && message.body != null && commands.contains(message.command)) {
 			Reflect.deleteField(message, "body");
 		}

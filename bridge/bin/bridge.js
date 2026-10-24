@@ -514,7 +514,7 @@ class bridge_Planner {
 		case "cppia":
 			return { target : target, adapter : bridge_AdapterKind.OwnHxcpp, cwd : cwd, 'arguments' : bridge_targets_Hxcpp.cppia(config,haxeArgs,cwd,toolchain), filters : []};
 		case "eval":
-			return { target : target, adapter : bridge_AdapterKind.Node(bridge_Planner.installed(adapters.eval,"eval-debugger")), cwd : cwd, 'arguments' : bridge_targets_Eval.arguments(config,haxeArgs,output,toolchain), filters : bridge_targets_Eval.filters(toolchain)};
+			return { target : target, adapter : bridge_AdapterKind.Node(bridge_Planner.installed(adapters.eval,"eval-debugger")), cwd : cwd, 'arguments' : bridge_targets_Eval.arguments(config,haxeArgs,output,toolchain), filters : bridge_targets_Eval.filters(config,toolchain)};
 		case "hl":
 			let launch = bridge_targets_HashLink.launch(config,haxeArgs,cwd,toolchain);
 			return { target : target, adapter : bridge_AdapterKind.Node(bridge_Planner.installed(adapters.hashlink,"hashlink-debugger")), cwd : cwd, 'arguments' : launch.arguments, filters : [new bridge_dap_BodylessResponses()], prelaunch : bridge_targets_HashLink.prelaunch(launch.arguments,launch.build)};
@@ -744,6 +744,8 @@ class bridge_Planner {
 bridge_Planner.__name__ = true;
 class bridge_Session {
 	constructor(plan,error) {
+		this.filters = [];
+		this.outgoing = Promise.resolve(null);
 		this.queue = Promise.resolve(null);
 		this.ownRequests = new haxe_ds_IntMap();
 		this.requestSeq = 1000000000;
@@ -754,6 +756,7 @@ class bridge_Session {
 		this.error = tmp != null ? tmp : "The Haxe debugger could not start.";
 		this.zed = new bridge_dap_Connection(process.stdin,process.stdout);
 		this.zed.onMessage = $bind(this,this.fromZed);
+		this.context = { request : $bind(this,this.requestDebugger), tell : $bind(this,this.tell)};
 		let _gthis = this;
 		process.stdin.on("end",function() {
 			_gthis.exit(0);
@@ -779,6 +782,7 @@ class bridge_Session {
 			$debugger = new bridge_targets_JsDebugAdapter(script1,plan.cwd);
 			break;
 		}
+		this.filters = plan.filters.concat([new bridge_dap_VariableEdits()]);
 		let _gthis = this;
 		$debugger.onMessage = function(message) {
 			bridge_Log.message("debugger",message);
@@ -788,16 +792,7 @@ class bridge_Session {
 				answer(message);
 				return;
 			}
-			_gthis.queue = _gthis.queue.then(function(_) {
-				return _gthis.adjust(message,plan.filters);
-			}).catch(function(error) {
-				bridge_Log.info("could not adjust a message from the debugger: " + error);
-				return message;
-			}).then(function(adjusted) {
-				if(adjusted != null) {
-					_gthis.zed.send(adjusted);
-				}
-			});
+			_gthis.toZed(message,0);
 		};
 		$debugger.onClose = function(code) {
 			let map = _gthis.ownRequests;
@@ -818,22 +813,53 @@ class bridge_Session {
 		};
 		this.debugger = $debugger;
 	}
-	adjust(message,filters) {
+	toZed(message,first) {
+		let _gthis = this;
+		this.queue = this.queue.then(function(_) {
+			return _gthis.adjust(message,first);
+		}).catch(function(error) {
+			bridge_Log.info("could not adjust a message from the debugger: " + error);
+			return message;
+		}).then(function(adjusted) {
+			if(adjusted != null) {
+				_gthis.zed.send(adjusted);
+			}
+		});
+	}
+	adjust(message,first) {
 		let result = Promise.resolve(message);
 		let _gthis = this;
-		let _g = 0;
-		while(_g < filters.length) {
-			let filter = filters[_g];
-			++_g;
+		let _g = first;
+		let _g1 = this.filters.length;
+		while(_g < _g1) {
+			let index = _g++;
+			let filter = this.filters[index];
 			result = result.then(function(adjusted) {
 				if(adjusted == null) {
 					return Promise.resolve(null);
 				} else {
-					return filter.fromDebugger(adjusted,$bind(_gthis,_gthis.requestDebugger));
+					return filter.fromDebugger(adjusted,_gthis.context);
 				}
 			});
 		}
 		return result;
+	}
+	adjustFromZed(message) {
+		let through = null;
+		let _gthis = this;
+		through = function(index,message) {
+			if(index < 0) {
+				return Promise.resolve(message);
+			}
+			return _gthis.filters[index].fromZed(message,_gthis.context).then(function(result) {
+				if(message.type == "request" && result.type == "response") {
+					_gthis.toZed(result,index + 1);
+					return null;
+				}
+				return through(index - 1,result);
+			});
+		};
+		return through(this.filters.length - 1,message);
 	}
 	requestDebugger(command,$arguments) {
 		let _gthis = this;
@@ -856,6 +882,19 @@ class bridge_Session {
 			this.answer(message);
 			return;
 		}
+		let _gthis = this;
+		this.outgoing = this.outgoing.then(function(_) {
+			return _gthis.adjustFromZed(message);
+		}).catch(function(error) {
+			bridge_Log.info("could not adjust a message from Zed: " + error);
+			return message;
+		}).then(function(adjusted) {
+			if(adjusted != null) {
+				_gthis.toDebugger(adjusted,$debugger);
+			}
+		});
+	}
+	toDebugger(message,$debugger) {
 		let _gthis = this;
 		if(message.type == "request" && message.command == "launch") {
 			let prelaunch = this.plan.prelaunch;
@@ -915,6 +954,13 @@ class bridge_Session {
 		}
 		this.send(response);
 	}
+	tell(message) {
+		let _gthis = this;
+		this.queue = this.queue.then(function(_) {
+			_gthis.send(message);
+			return null;
+		});
+	}
 	send(message) {
 		message.seq = ++this.seq;
 		bridge_Log.message("bridge",message);
@@ -936,10 +982,28 @@ class bridge_Session {
 	}
 }
 bridge_Session.__name__ = true;
-class bridge_dap_BodylessResponses {
+class bridge_dap_Filter {
 	constructor() {
+		if(bridge_dap_Filter._hx_skip_constructor) {
+			return;
+		}
+		this._hx_constructor();
 	}
-	fromDebugger(message,request) {
+	_hx_constructor() {
+	}
+	fromDebugger(message,context) {
+		return Promise.resolve(message);
+	}
+	fromZed(message,context) {
+		return Promise.resolve(message);
+	}
+}
+bridge_dap_Filter.__name__ = true;
+class bridge_dap_BodylessResponses extends bridge_dap_Filter {
+	constructor() {
+		super();
+	}
+	fromDebugger(message,context) {
 		if(message.type == "response" && message.body != null && bridge_dap_BodylessResponses.commands.includes(message.command)) {
 			Reflect.deleteField(message,"body");
 		}
@@ -993,7 +1057,7 @@ class bridge_dap_NodeAdapter {
 		};
 		this.onMessage = function(_) {
 		};
-		this.child = js_node_ChildProcess.spawn(process.execPath,[script],{ cwd : cwd, windowsHide : true});
+		this.child = bridge_util_ProcessTree.spawn(process.execPath,[script],{ cwd : cwd, windowsHide : true});
 		this.connection = new bridge_dap_Connection(this.child.stdout,this.child.stdin);
 		let _gthis = this;
 		this.connection.onMessage = function(message) {
@@ -1016,10 +1080,113 @@ class bridge_dap_NodeAdapter {
 		this.connection.send(message);
 	}
 	kill() {
-		this.child.kill();
+		bridge_util_ProcessTree.kill(this.child);
 	}
 }
 bridge_dap_NodeAdapter.__name__ = true;
+class bridge_dap_VariableEdits extends bridge_dap_Filter {
+	constructor() {
+		bridge_dap_Filter._hx_skip_constructor = true;
+		super();
+		bridge_dap_Filter._hx_skip_constructor = false;
+		this._hx_constructor();
+	}
+	_hx_constructor() {
+		this.values = new haxe_ds_IntMap();
+		this.reads = new haxe_ds_IntMap();
+		this.edits = new haxe_ds_IntMap();
+		super._hx_constructor();
+	}
+	fromZed(message,context) {
+		if(message.type == "request") {
+			let tmp = message.arguments;
+			let args = tmp != null ? tmp : { };
+			let _g = message.command;
+			if(_g == null) {
+				let command = _g;
+				if(bridge_dap_VariableEdits.resuming.includes(command)) {
+					this.values.h = { };
+				}
+			} else {
+				switch(_g) {
+				case "setVariable":
+					this.edits.h[message.seq] = { reference : args.variablesReference, name : args.name, value : args.value};
+					break;
+				case "variables":
+					this.reads.h[message.seq] = args.variablesReference;
+					break;
+				default:
+					let command = _g;
+					if(bridge_dap_VariableEdits.resuming.includes(command)) {
+						this.values.h = { };
+					}
+				}
+			}
+		}
+		return Promise.resolve(message);
+	}
+	fromDebugger(message,context) {
+		if(message.type == "event" && (message.event == "stopped" || message.event == "continued")) {
+			this.values.h = { };
+		} else if(message.type == "response" && message.command == "setVariable") {
+			let edit = this.edits.h[message.request_seq];
+			this.edits.remove(message.request_seq);
+			if(edit != null) {
+				this.edited(edit,message,context);
+			}
+		} else if(message.type == "response" && message.command == "variables") {
+			let reference = this.reads.h[message.request_seq];
+			this.reads.remove(message.request_seq);
+			let set = reference == null ? null : this.values.h[reference];
+			if(set != null && message.success == true) {
+				let tmp = message.body;
+				let tmp1 = tmp != null ? tmp.variables : null;
+				let variables = tmp1 != null ? tmp1 : [];
+				let _g = 0;
+				while(_g < variables.length) {
+					let variable = variables[_g];
+					++_g;
+					let edit = set.h[variable.name];
+					if(edit != null) {
+						variable.value = edit.value;
+						if(edit.type != null) {
+							variable.type = edit.type;
+						}
+						if(edit.variablesReference != null) {
+							variable.variablesReference = edit.variablesReference;
+						}
+					}
+				}
+			}
+		}
+		return Promise.resolve(message);
+	}
+	edited(edit,response,context) {
+		let reason;
+		if(response.success != true) {
+			let tmp = response.body;
+			let tmp1 = tmp != null ? tmp.error : null;
+			let tmp2 = tmp1 != null ? tmp1.format : null;
+			let tmp3 = tmp2 != null ? tmp2 : response.message;
+			reason = tmp3 != null ? tmp3 : "the debugger refused";
+		} else {
+			let tmp = response.body;
+			reason = (tmp != null ? tmp.value : null) == null ? "the debugger can't make the value " + edit.value : null;
+		}
+		if(reason != null) {
+			context.tell({ seq : 0, type : "event", event : "output", body : { category : "stderr", output : "Couldn't change " + edit.name + ": " + reason + "\n"}});
+			return;
+		}
+		if(!this.values.h.hasOwnProperty(edit.reference)) {
+			let this1 = this.values;
+			let key = edit.reference;
+			let value = new haxe_ds_StringMap();
+			this1.h[key] = value;
+		}
+		this.values.h[edit.reference].h[edit.name] = response.body;
+	}
+}
+bridge_dap_VariableEdits.__name__ = true;
 class bridge_project_HaxeArgs {
 	static compilations(args) {
 		let common = [];
@@ -1267,10 +1434,14 @@ class bridge_targets_Ceramic {
 }
 bridge_targets_Ceramic.__name__ = true;
 class bridge_targets_Eval {
-	static filters(toolchain) {
+	static filters(config,toolchain) {
 		let filters = [new bridge_dap_BodylessResponses(),new bridge_targets_EvalThreads()];
 		if(toolchain.major >= 5) {
 			filters.push(new bridge_targets_EvalCompletions());
+		}
+		let tmp = config.mergeScopes;
+		if(tmp != null ? tmp : true) {
+			filters.push(new bridge_targets_EvalScopes());
 		}
 		return filters;
 	}
@@ -1280,16 +1451,16 @@ class bridge_targets_Eval {
 		}
 		let args = output == null || output == "eval" ? haxeArgs : haxeArgs.concat(["--no-output"]);
 		let tmp = config.stopOnEntry;
-		let tmp1 = config.mergeScopes;
-		let tmp2 = config.showGeneratedVariables;
-		return { cwd : ".", args : args, stopOnEntry : tmp != null && tmp, haxeExecutable : { executable : toolchain.path, env : toolchain.env}, mergeScopes : tmp1 != null ? tmp1 : true, showGeneratedVariables : tmp2 != null && tmp2, trace : false};
+		let tmp1 = config.showGeneratedVariables;
+		return { cwd : ".", args : args, stopOnEntry : tmp != null && tmp, haxeExecutable : { executable : toolchain.path, env : toolchain.env}, mergeScopes : false, showGeneratedVariables : tmp1 != null && tmp1, trace : false};
 	}
 }
 bridge_targets_Eval.__name__ = true;
-class bridge_targets_EvalCompletions {
+class bridge_targets_EvalCompletions extends bridge_dap_Filter {
 	constructor() {
+		super();
 	}
-	fromDebugger(message,request) {
+	fromDebugger(message,context) {
 		if(message.type == "response" && message.command == "initialize" && message.body != null) {
 			message.body.supportsCompletionsRequest = false;
 		}
@@ -1297,11 +1468,144 @@ class bridge_targets_EvalCompletions {
 	}
 }
 bridge_targets_EvalCompletions.__name__ = true;
-class bridge_targets_EvalThreads {
+class bridge_targets_EvalScopes extends bridge_dap_Filter {
 	constructor() {
-		this.keys = new haxe_ds_StringMap();
+		bridge_dap_Filter._hx_skip_constructor = true;
+		super();
+		bridge_dap_Filter._hx_skip_constructor = false;
+		this._hx_constructor();
 	}
-	fromDebugger(message,request) {
+	_hx_constructor() {
+		this.origins = new haxe_ds_IntMap();
+		this.merged = new haxe_ds_IntMap();
+		super._hx_constructor();
+	}
+	fromDebugger(message,context) {
+		if(message.type == "event" && (message.event == "stopped" || message.event == "continued")) {
+			this.merged.h = { };
+			this.origins.h = { };
+		} else if(message.type == "response" && message.command == "scopes" && message.success == true) {
+			let tmp = message.body.scopes;
+			message.body.scopes = this.merge(tmp != null ? tmp : []);
+		}
+		return Promise.resolve(message);
+	}
+	fromZed(message,context) {
+		let args = message.arguments;
+		if(message.type != "request" || args == null) {
+			return Promise.resolve(message);
+		}
+		let _g = message.command;
+		if(_g != null) {
+			switch(_g) {
+			case "setVariable":
+				let tmp = this.origins.h[args.variablesReference];
+				let origin = tmp != null ? tmp.h[args.name] : null;
+				if(origin != null) {
+					args.variablesReference = origin.reference;
+					args.name = origin.name;
+				}
+				break;
+			case "variables":
+				let scopes = this.merged.h[args.variablesReference];
+				if(scopes != null && scopes.length > 1) {
+					return this.variables(message,scopes,context);
+				}
+				break;
+			default:
+			}
+		}
+		return Promise.resolve(message);
+	}
+	merge(scopes) {
+		let firsts_h = Object.create(null);
+		let result = [];
+		let _g = 0;
+		while(_g < scopes.length) {
+			let scope = scopes[_g];
+			++_g;
+			let first = firsts_h[scope.name];
+			if(first == null) {
+				firsts_h[scope.name] = scope;
+				this.merged.h[scope.variablesReference] = [{ reference : scope.variablesReference, line : scope.line}];
+				result.push(scope);
+				continue;
+			}
+			this.merged.h[first.variablesReference].push({ reference : scope.variablesReference, line : scope.line});
+			if(scope.line != null && (first.line == null || scope.line < first.line)) {
+				first.line = scope.line;
+				first.column = scope.column;
+			}
+			if(scope.endLine != null && (first.endLine == null || scope.endLine > first.endLine)) {
+				first.endLine = scope.endLine;
+				first.endColumn = scope.endColumn;
+			}
+		}
+		return result;
+	}
+	variables(request,scopes,context) {
+		let _gthis = this;
+		let _g = [];
+		let _g1 = 0;
+		while(_g1 < scopes.length) {
+			let scope = scopes[_g1];
+			++_g1;
+			_g.push(context.request("variables",{ variablesReference : scope.reference}));
+		}
+		return Promise.all(_g).then(function(responses) {
+			let result = [];
+			let names = new haxe_ds_StringMap();
+			let _g = 0;
+			let _g1 = responses.length;
+			while(_g < _g1) {
+				let index = _g++;
+				let response = responses[index];
+				if(response.success != true) {
+					let tmp = response.message;
+					return bridge_targets_EvalScopes.answer(request,null,tmp != null ? tmp : "eval didn't list the variables");
+				}
+				let tmp = response.body;
+				let tmp1 = tmp != null ? tmp.variables : null;
+				let variables = tmp1 != null ? tmp1 : [];
+				let _g1 = 0;
+				while(_g1 < variables.length) {
+					let variable = variables[_g1];
+					++_g1;
+					let name = variable.name;
+					let shown = Object.prototype.hasOwnProperty.call(names.h,name) ? "" + name + " - line " + scopes[index].line : name;
+					names.h[shown] = { reference : scopes[index].reference, name : name};
+					variable.name = shown;
+					result.push(variable);
+				}
+			}
+			_gthis.origins.h[request.arguments.variablesReference] = names;
+			return bridge_targets_EvalScopes.answer(request,{ variables : result});
+		});
+	}
+	static answer(request,body,failure) {
+		let response = { seq : 0, type : "response", request_seq : request.seq, command : request.command, success : failure == null};
+		if(body != null) {
+			response.body = body;
+		}
+		if(failure != null) {
+			response.message = failure;
+		}
+		return response;
+	}
+}
+bridge_targets_EvalScopes.__name__ = true;
+class bridge_targets_EvalThreads extends bridge_dap_Filter {
+	constructor() {
+		bridge_dap_Filter._hx_skip_constructor = true;
+		super();
+		bridge_dap_Filter._hx_skip_constructor = false;
+		this._hx_constructor();
+	}
+	_hx_constructor() {
+		this.keys = new haxe_ds_StringMap();
+		super._hx_constructor();
+	}
+	fromDebugger(message,context) {
 		if(message.type == "response" && message.command == "threads" && message.success == true) {
 			this.learn(message);
 		}
@@ -1324,7 +1628,7 @@ class bridge_targets_EvalThreads {
 			return Promise.resolve(message);
 		}
 		let _gthis = this;
-		return request("threads",{ }).then(function(response) {
+		return context.request("threads",{ }).then(function(response) {
 			_gthis.learn(response);
 			if(Object.prototype.hasOwnProperty.call(_gthis.keys.h,name)) {
 				message.body.threadId = _gthis.keys.h[name];
@@ -1493,6 +1797,7 @@ class bridge_targets_Hxcpp {
 bridge_targets_Hxcpp.__name__ = true;
 class bridge_targets_HxcppAdapter {
 	constructor() {
+		this.values = new haxe_ds_IntMap();
 		this.pauseReason = "pause";
 		this.stopped = false;
 		this.threads = new haxe_ds_IntMap();
@@ -1556,8 +1861,14 @@ class bridge_targets_HxcppAdapter {
 				if(!this.stopped) {
 					this.respond(message,null,"The program is running. Pause it to evaluate expressions.");
 				} else {
+					let frameId;
 					let tmp = args.frameId;
-					this.forward(message,"evaluate",{ expr : args.expression, frameId : tmp != null ? tmp : this.topFrame},function(info) {
+					frameId = tmp != null ? tmp : this.topFrame;
+					this.forward(message,"evaluate",{ expr : args.expression, frameId : frameId},function(info) {
+						if(info.variablesReference != null && info.variablesReference > 0) {
+							let path = new EReg("^[A-Za-z_][\\w.]*$","").match(args.expression) ? args.expression : "(" + Std.string(args.expression) + ")";
+							_gthis.values.h[info.variablesReference] = { frame : frameId, expression : path};
+						}
 						let body = bridge_targets_HxcppAdapter.variable(info);
 						body.result = body.value;
 						Reflect.deleteField(body,"value");
@@ -1588,6 +1899,9 @@ class bridge_targets_HxcppAdapter {
 						if(frameId == _gthis.topFrame && scope.name == "Locals") {
 							_gthis.topLocals = scope.id;
 						}
+						if(scope.name == "Locals" || scope.name == "Members") {
+							_gthis.values.h[scope.id] = { frame : frameId, expression : scope.name == "Members" ? "this" : null};
+						}
 					}
 					let _g1 = [];
 					let _g2 = 0;
@@ -1610,12 +1924,22 @@ class bridge_targets_HxcppAdapter {
 				this.respond(message);
 				break;
 			case "setVariable":
-				if(args.variablesReference != this.topLocals) {
-					this.respond(message,null,"hxcpp can only change the local variables of the innermost frame.");
-				} else {
+				let target = this.values.h[args.variablesReference];
+				let assigned = (target != null ? target.expression : null) == null ? null : bridge_targets_HxcppAdapter.member(target.expression,args.name);
+				if(args.variablesReference == this.topLocals) {
 					this.forward(message,"setVariable",{ expr : args.name, value : args.value},function(result) {
 						return { value : Std.string(result.value)};
 					});
+				} else if(assigned != null) {
+					this.forward(message,"evaluate",{ expr : "" + assigned + " = " + Std.string(args.value), frameId : target.frame},function(info) {
+						let body = bridge_targets_HxcppAdapter.variable(info);
+						Reflect.deleteField(body,"name");
+						return body;
+					});
+				} else if(target != null && target.expression == null) {
+					this.respond(message,null,"hxcpp can only change the local variables of the innermost frame.");
+				} else {
+					this.respond(message,null,"hxcpp can't change " + Std.string(args.name) + " from the variables list. An assignment in the debug console may work.");
 				}
 				break;
 			case "stackTrace":
@@ -1674,7 +1998,19 @@ class bridge_targets_HxcppAdapter {
 				if(args.count != null) {
 					params.count = args.count;
 				}
+				let parent = this.values.h[args.variablesReference];
 				this.forward(message,"getVariables",params,function(result) {
+					if(parent != null) {
+						let _g = 0;
+						while(_g < result.length) {
+							let info = result[_g];
+							++_g;
+							let expression = bridge_targets_HxcppAdapter.member(parent.expression,info.name);
+							if(info.variablesReference != null && info.variablesReference > 0 && expression != null) {
+								_gthis.values.h[info.variablesReference] = { frame : parent.frame, expression : expression};
+							}
+						}
+					}
 					let _g = [];
 					let _g1 = 0;
 					while(_g1 < result.length) {
@@ -1925,6 +2261,7 @@ class bridge_targets_HxcppAdapter {
 		this.stopped = false;
 		this.topFrame = null;
 		this.topLocals = null;
+		this.values.h = { };
 	}
 	finish() {
 		if(!this.terminated) {
@@ -1993,6 +2330,24 @@ class bridge_targets_HxcppAdapter {
 			frame.presentationHint = "subtle";
 		}
 		return frame;
+	}
+	static member(parent,name) {
+		let identifier = new EReg("^[A-Za-z_]\\w*$","").match(name);
+		if(parent == null) {
+			if(identifier) {
+				return name;
+			} else {
+				return null;
+			}
+		}
+		if(new EReg("^-?\\d+$","").match(name) || name.startsWith("\"")) {
+			return "" + parent + "[" + name + "]";
+		}
+		if(identifier) {
+			return "" + parent + "." + name;
+		} else {
+			return null;
+		}
 	}
 	static variable(info) {
 		let tmp = info.variablesReference;
@@ -2196,7 +2551,7 @@ class bridge_targets_JsDebugAdapter {
 	}
 	start(script,cwd) {
 		let server = Std.string(this.port);
-		let server1 = js_node_ChildProcess.spawn(process.execPath,[script,server,"127.0.0.1"],{ cwd : cwd, windowsHide : true});
+		let server1 = bridge_util_ProcessTree.spawn(process.execPath,[script,server,"127.0.0.1"],{ cwd : cwd, windowsHide : true});
 		this.serverProcess = server1;
 		let listening = false;
 		let _gthis = this;
@@ -2460,9 +2815,8 @@ class bridge_targets_JsDebugAdapter {
 		this.onClose(code);
 	}
 	kill() {
-		let tmp = this.serverProcess;
-		if(tmp != null) {
-			tmp.kill();
+		if(this.serverProcess != null) {
+			bridge_util_ProcessTree.kill(this.serverProcess);
 		}
 	}
 	static freePort() {
@@ -3959,8 +4313,10 @@ js_Boot.__toStr = ({ }).toString;
 bridge_Build.running = [];
 bridge_Build.stopped = false;
 bridge_Planner.supported = ["eval","hxcpp","cppia","hl","js"];
+bridge_dap_Filter._hx_skip_constructor = false;
 bridge_dap_BodylessResponses.commands = ["attach","launch","configurationDone","disconnect","terminate","restart","next","stepIn","stepOut","stepBack","reverseContinue","restartFrame","goto","pause","terminateThreads","cancel"];
 bridge_dap_Connection.contentLength = new EReg("Content-Length:\\s*(\\d+)","i");
+bridge_dap_VariableEdits.resuming = ["continue","next","stepIn","stepOut","stepBack","reverseContinue","restartFrame","goto","restart"];
 bridge_targets_Ceramic.native = ["linux","mac","windows"];
 bridge_targets_HashLink.helper = "zed.haxedebug.ClassPaths";
 bridge_targets_HashLink.helperSource = "package zed.haxedebug;\n\n// Written by the Haxe debugger for Zed, for the duration of one build.\nclass ClassPaths {\n\tpublic static function write(file:String) {\n\t\tvar paths = [for (path in haxe.macro.Context.getClassPath()) sys.FileSystem.absolutePath(path == \"\" ? \".\" : path)];\n\t\tsys.io.File.saveContent(file, haxe.Json.stringify(paths));\n\t}\n}\n";

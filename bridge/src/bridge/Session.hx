@@ -6,6 +6,7 @@ import bridge.dap.Connection;
 import bridge.dap.Filter;
 import bridge.dap.Message;
 import bridge.dap.NodeAdapter;
+import bridge.dap.VariableEdits;
 import bridge.targets.HxcppAdapter;
 import bridge.targets.JsDebugAdapter;
 import js.Node.process;
@@ -36,11 +37,20 @@ class Session {
 	/** The debugger's messages, each waiting for the ones before it to reach Zed. **/
 	var queue:Promise<Any> = Promise.resolve(null);
 
+	/** Zed's messages, each waiting for the ones before it to reach the debugger. **/
+	var outgoing:Promise<Any> = Promise.resolve(null);
+
+	/** The plan's filters, then the ones every debugger gets, from the debugger's side to Zed's. **/
+	var filters:Array<Filter> = [];
+
+	final context:FilterContext;
+
 	public function new(plan:Null<Plan>, error:Null<String>) {
 		this.plan = plan;
 		this.error = error ?? "The Haxe debugger could not start.";
 		zed = new Connection(process.stdin, process.stdout);
 		zed.onMessage = fromZed;
+		context = {request: requestDebugger, tell: tell};
 		process.stdin.on("end", () -> exit(0));
 		if (plan != null) {
 			start(plan);
@@ -54,6 +64,7 @@ class Session {
 			case OwnHxcpp: new HxcppAdapter();
 			case JsDebug(script): new JsDebugAdapter(script, plan.cwd);
 		};
+		filters = plan.filters.concat([new VariableEdits()]);
 		debugger.onMessage = function(message) {
 			Log.message("debugger", message);
 			final answer = message.type == "response" ? ownRequests.get(message.request_seq) : null;
@@ -62,14 +73,7 @@ class Session {
 				answer(message);
 				return;
 			}
-			queue = queue.then(_ -> adjust(message, plan.filters)).catchError(function(error) {
-				Log.info('could not adjust a message from the debugger: $error');
-				return message;
-			}).then(function(adjusted) {
-				if (adjusted != null) {
-					zed.send(adjusted);
-				}
-			});
+			toZed(message, 0);
 		};
 		debugger.onClose = function(code) {
 			for (seq => answer in ownRequests) {
@@ -81,13 +85,49 @@ class Session {
 		this.debugger = debugger;
 	}
 
-	/** Passes a message from the debugger through each filter in turn; null when one drops it. **/
-	function adjust(message:Message, filters:Array<Filter>):Promise<Null<Message>> {
+	/**
+		Passes a message from the debugger, or a filter's answer to Zed, through the filters from `first`
+		on, then sends it to Zed after the messages before it.
+	**/
+	function toZed(message:Message, first:Int) {
+		queue = queue.then(_ -> adjust(message, first)).catchError(function(error) {
+			Log.info('could not adjust a message from the debugger: $error');
+			return message;
+		}).then(function(adjusted) {
+			if (adjusted != null) {
+				zed.send(adjusted);
+			}
+		});
+	}
+
+	/** Passes a message from the debugger through the filters from `first` on; null when one drops it. **/
+	function adjust(message:Message, first:Int):Promise<Null<Message>> {
 		var result:Promise<Null<Message>> = Promise.resolve(message);
-		for (filter in filters) {
-			result = result.then(adjusted -> adjusted == null ? Promise.resolve(null) : filter.fromDebugger(adjusted, requestDebugger));
+		for (index in first...filters.length) {
+			final filter = filters[index];
+			result = result.then(adjusted -> adjusted == null ? Promise.resolve(null) : filter.fromDebugger(adjusted, context));
 		}
 		return result;
+	}
+
+	/**
+		Passes a message from Zed through the filters, from Zed's side, and resolves with the message for
+		the debugger, or null when a filter answered it.
+	**/
+	function adjustFromZed(message:Message):Promise<Null<Message>> {
+		function through(index:Int, message:Message):Promise<Null<Message>> {
+			if (index < 0) {
+				return Promise.resolve(message);
+			}
+			return filters[index].fromZed(message, context).then(function(result) {
+				if (message.type == "request" && result.type == "response") {
+					toZed(result, index + 1);
+					return null;
+				}
+				return through(index - 1, result);
+			});
+		}
+		return through(filters.length - 1, message);
 	}
 
 	/** Sends the debugger a request of the bridge's own. Without an answer in 5 seconds, resolves with a failure. **/
@@ -112,6 +152,18 @@ class Session {
 			answer(message);
 			return;
 		}
+		outgoing = outgoing.then(_ -> adjustFromZed(message)).catchError(function(error) {
+			Log.info('could not adjust a message from Zed: $error');
+			return message;
+		}).then(function(adjusted:Null<Message>) {
+			if (adjusted != null) {
+				toDebugger(adjusted, debugger);
+			}
+		});
+	}
+
+	/** Sends the debugger a message from Zed, building the program first when it's `launch`. **/
+	function toDebugger(message:Message, debugger:Adapter) {
 		if (message.type == "request" && message.command == "launch") {
 			final prelaunch = plan.prelaunch;
 			if (prelaunch != null) {
@@ -172,6 +224,14 @@ class Session {
 			response.message = failure;
 		}
 		send(response);
+	}
+
+	/** Sends Zed a message of a filter's, after the messages already on their way. **/
+	function tell(message:Message) {
+		queue = queue.then(function(_) {
+			send(message);
+			return null;
+		});
 	}
 
 	function send(message:Message) {
