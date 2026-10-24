@@ -81,7 +81,7 @@ class PlanTest extends utest.Test {
 	}
 
 	function testHxcppBuildsOnlyTheCppCompilation() {
-		final dir = Fixture.create({"build.hxml": "-cp src\n--each\n-main A\n--js a.js\n--next\n-main B\n--cpp out\n-D HAXE_OUTPUT_FILE=game"});
+		final dir = Fixture.create({"build.hxml": "-cp src\n--each\n-main A\n--python a.py\n--next\n-main B\n--cpp out\n-D HAXE_OUTPUT_FILE=game"});
 		final launch:HxcppLaunch = plan(dir, {request: "launch"}).arguments;
 		Assert.same(["-cp", "src", "-main", "B", "--cpp", "out", "-D", "HAXE_OUTPUT_FILE=game"], launch.build.args.slice(0, 8));
 		Assert.equals(executable(dir, "out/game"), launch.program);
@@ -164,6 +164,29 @@ class PlanTest extends utest.Test {
 		Assert.stringContains("builds HashLink programs itself", launchError(() -> plan(dir, {request: "launch", program: "bin/main.hl"})));
 	}
 
+	function testJavaScriptBuildsWithSourceMaps() {
+		final dir = Fixture.create({"build.hxml": "-cp src\n-main Main\n--js bin/main.js\n--cmd node bin/main.js"});
+		final plan = plan(dir, {request: "launch", args: ["one"]});
+		Assert.equals("js", plan.target);
+		Assert.isTrue(plan.adapter.match(JsDebug(_)));
+		Assert.same(["-cp", "src", "-main", "Main", "--js", "bin/main.js", "-debug", "-D", "js-source-map"], plan.prelaunch.build.args);
+		final launch:Dynamic = plan.arguments;
+		Assert.equals("pwa-node", launch.type);
+		Assert.equals(Path.join([dir, "bin", "main.js"]), launch.program);
+		Assert.same(["one"], launch.args);
+		// Without these, js-debug doesn't take breakpoints in .hx files.
+		Assert.equals(dir, launch.__workspaceFolder);
+		Assert.isFalse(launch.pauseForSourceMap);
+	}
+
+	function testJavaScriptRunsAProgramAlreadyBuilt() {
+		final dir = Fixture.create({"src/Main.hx": ""});
+		final plan = plan(dir, {request: "launch", program: "bin/main.js"});
+		Assert.equals("js", plan.target);
+		Assert.isNull(plan.prelaunch);
+		Assert.equals(Path.join([dir, "bin", "main.js"]), plan.arguments.program);
+	}
+
 	function testHxcppNeedsTheDebugServer() {
 		final dir = Fixture.create({"build.hxml": "-main Main\n--cpp bin"});
 		final haxe = Fixture.script(dir, "haxe4/haxe", "console.log('4.3.7')");
@@ -215,7 +238,7 @@ class PlanTest extends utest.Test {
 		if (config.haxePath == null) {
 			config.haxePath = Fixture.script(dir, "haxe4/haxe", "console.log('4.3.7')");
 		}
-		return Planner.plan(config, settings ?? {}, {eval: adapter(dir), hxcppDebugServer: server(dir), hashlink: adapter(dir)}, dir, process.env);
+		return Planner.plan(config, settings ?? {}, {eval: adapter(dir), hxcppDebugServer: server(dir), hashlink: adapter(dir), jsDebug: adapter(dir)}, dir, process.env);
 	}
 
 	static function server(dir:String):String {

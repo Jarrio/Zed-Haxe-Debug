@@ -1,11 +1,11 @@
 // End-to-end tests: the real bridge and eval-debugger debugging real Haxe, driven the way Zed drives them.
 //
 //   node e2e/run.js [test names...] [--haxe=PATH] [--hl=PATH] [--eval=PATH] [--hxcpp-debug-server=PATH]
-//                   [--hashlink=PATH] [--bridge=PATH] [--verbose]
+//                   [--hashlink=PATH] [--js-debug=PATH] [--bridge=PATH] [--verbose]
 //
 // Without --haxe, the bridge picks Haxe as it would for a user (PATH here). eval-debugger,
-// hxcpp-debug-server and hashlink-debugger come from the releases src/lib.rs pins, downloaded into
-// e2e/.adapters. Each test copies its project into a temporary folder with a space in its name, which
+// hxcpp-debug-server, hashlink-debugger and js-debug come from the releases src/lib.rs pins, downloaded
+// into e2e/.adapters. Each test copies its project into a temporary folder with a space in its name, which
 // eval-debugger can't handle by itself (see Eval.hx). The hxcpp tests need hxcpp (haxelib install hxcpp)
 // and a C++ compiler; the HashLink tests need the HashLink VM (`hl` on PATH, or --hl) on x86-64.
 "use strict";
@@ -139,7 +139,8 @@ async function start(env, project, config) {
   const trace = option("trace") ? ["--trace", path.resolve(option("trace"))] : [];
   const server = env.hxcppDebugServer ? ["--hxcpp-debug-server", env.hxcppDebugServer] : [];
   const hashlink = env.hashlink ? ["--hashlink", env.hashlink] : [];
-  const client = new Client(env.bridge, dir, ["--config", JSON.stringify(config), "--project", "{}", "--eval", env.eval, ...server, ...hashlink, ...trace]);
+  const jsDebug = env.jsDebug ? ["--js-debug", env.jsDebug] : [];
+  const client = new Client(env.bridge, dir, ["--config", JSON.stringify(config), "--project", "{}", "--eval", env.eval, ...server, ...hashlink, ...jsDebug, ...trace]);
   const init = await client.request("initialize", { adapterID: "Haxe", linesStartAt1: true, columnsStartAt1: true, pathFormat: "path" });
   check(init.success, `initialize failed: ${init.message}`);
   return { dir, client, config, capabilities: init.body };
@@ -339,11 +340,48 @@ const tests = {
     await client.close();
   },
 
+  async javascript(env) {
+    const session = await start(env, "javascript", { request: "launch", args: ["one", "two"] });
+    const { client, dir } = session;
+    const file = path.join(dir, "src", "Main.hx");
+    const line = breakLine(file, "main");
+    const { threadId, frame, variables } = await runToBreakpoint(session, file, line);
+    // The source maps lead back to the Haxe code.
+    check(frame.source.path === file && frame.line === line, `stopped at ${frame.source.path}:${frame.line}, expected ${file}:${line}`);
+    check(variables.greeting === "'hello'", `greeting is ${variables.greeting}`);
+    check(variables.sum === "5", `sum is ${variables.sum}`);
+    // The console takes JavaScript.
+    const result = await client.request("evaluate", { expression: "sum * 2", frameId: frame.id, context: "repl" });
+    check(result.success && result.body.result === "10", `sum * 2 gave ${JSON.stringify(result.body ?? result.message)}`);
+    const stepped = client.nextEvent("stopped");
+    await client.request("next", { threadId });
+    await stepped;
+    const top = (await client.request("stackTrace", { threadId })).body.stackFrames[0];
+    check(top.source.path === file && top.line === line + 1, `the step stopped at ${top.source?.path}:${top.line}, expected line ${line + 1}`);
+    await client.request("continue", { threadId });
+    await client.event("terminated");
+    const output = client.output();
+    check(output.includes("hello 5"), `no "hello 5" in the output: ${output}`);
+    check(output.includes("args one,two"), `the program didn't get its arguments: ${output}`);
+    check(output.includes(`cwd ${dir}`), `the program didn't run in the project folder: ${output}`);
+    await client.request("disconnect", {});
+    await client.close();
+  },
+
+  async javascriptBuildError(env) {
+    const { client, config } = await start(env, "javascript", { request: "launch", haxeArgs: ["-cp", "src", "-main", "Missing", "--js", "bin/main.js"] });
+    const launch = await client.request("launch", config, buildTime);
+    check(!launch.success && /The build failed/.test(launch.message) && /Missing/.test(launch.message), `unexpected launch result: ${JSON.stringify(launch)}`);
+    await client.event("terminated");
+    await client.request("disconnect", {});
+    await client.close();
+  },
+
   async unsupported(env) {
-    const { client, config } = await start(env, "macro", { request: "launch" });
+    const { client, config } = await start(env, "macro", { request: "launch", haxeArgs: ["-cp", "src", "-main", "Main", "--python", "bin/main.py"] });
     const launch = await client.request("launch", config);
-    check(!launch.success, "launch of a JS build succeeded");
-    check(/js builds isn't supported yet/.test(launch.message), `unexpected message: ${launch.message}`);
+    check(!launch.success, "launch of a Python build succeeded");
+    check(/python builds isn't supported yet/.test(launch.message), `unexpected message: ${launch.message}`);
     await client.event("terminated");
     await client.request("disconnect", {});
     await client.close();
@@ -382,6 +420,21 @@ async function pinnedHashLink() {
     childProcess.execFileSync(command, extract, { stdio: "inherit" });
   }
   return adapter;
+}
+
+/** js-debug's dapDebugServer.js from the release src/lib.rs pins. **/
+async function pinnedJsDebug() {
+  const version = /const JS_DEBUG_VERSION: &str = "([^"]+)"/.exec(fs.readFileSync(path.join(bridgeDir, "..", "src", "lib.rs"), "utf8"))[1];
+  const dir = path.join(__dirname, ".adapters", `js-debug-${version}`);
+  const server = path.join(dir, "js-debug", "src", "dapDebugServer.js");
+  if (!fs.existsSync(server)) {
+    fs.mkdirSync(dir, { recursive: true });
+    const archive = path.join(dir, "js-debug.tar.gz");
+    console.log(`downloading js-debug ${version}`);
+    await download(`https://github.com/microsoft/vscode-js-debug/releases/download/${version}/js-debug-dap-${version}.tar.gz`, archive);
+    childProcess.execFileSync("tar", ["-xzf", archive, "-C", dir], { stdio: "inherit" });
+  }
+  return server;
 }
 
 /** Why the HashLink tests can't run here, or null when they can. **/
@@ -449,6 +502,7 @@ async function main() {
     eval: option("eval") ?? (await pinnedEval()),
     hxcppDebugServer: option("hxcpp-debug-server") ?? (hxcpp ? await pinnedHxcppDebugServer() : undefined),
     hashlink: option("hashlink") ?? (noHashLink ? undefined : await pinnedHashLink()),
+    jsDebug: option("js-debug") ?? (await pinnedJsDebug()),
     bridge: option("bridge") ?? path.join(bridgeDir, "bin", "bridge.js"),
   };
   let failed = 0;

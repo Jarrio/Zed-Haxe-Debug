@@ -8,6 +8,7 @@ Breakpoints, stepping, variables and the debug console for Haxe in Zed.
 | hxcpp (`--cpp`) | [hxcpp-debug-server](https://github.com/Jarrio/hxcpp-debugger) | works |
 | cppia (`--cppia`), in a host built for debugging | hxcpp-debug-server | works with libhxcpp (see "cppia") |
 | HashLink (`--hl`) | [hashlink-debugger](https://github.com/vshaxe/hashlink-debugger) | works |
+| JavaScript (`--js`), run by Node | [js-debug](https://github.com/microsoft/vscode-js-debug), as in Zed's own JavaScript support | works, with breakpoints in the Haxe code |
 
 Between Zed and the debuggers sits a **bridge written in Haxe** (`bridge/`), which:
 
@@ -19,6 +20,8 @@ Between Zed and the debuggers sits a **bridge written in Haxe** (`bridge/`), whi
 - for hxcpp, builds the program with hxcpp-debug-server, runs it, and talks to the debug server inside
   it, doing the job of the adapter in vshaxe's VS Code extension
 - for HashLink, builds the program and runs vshaxe's hashlink-debugger, unmodified
+- for JavaScript, builds with source maps and runs Microsoft's js-debug, which follows them back to
+  the Haxe code
 
 ## Requirements
 
@@ -28,6 +31,7 @@ Between Zed and the debuggers sits a **bridge written in Haxe** (`bridge/`), whi
 - For hxcpp: the hxcpp haxelib and a C++ compiler, as for any hxcpp build
 - For HashLink: the HashLink VM, on x86-64 (hashlink-debugger's native module is built for x86-64
   only). On macOS, `hl` must be codesigned for debugging (`make codesign_osx` when building HashLink).
+- For JavaScript: Node
 
 ## Setting up
 
@@ -63,13 +67,14 @@ debug. Or describe a session in `.zed/debug.json`:
 |---|---|
 | `hxml` | The hxml to build, relative to `cwd`. |
 | `haxeArgs` | Haxe arguments, instead of `hxml`. |
-| `target` | `"eval"`, `"hxcpp"`, `"cppia"` or `"hl"`. Without it, the build's output decides: `--interp` and `--run` use eval, `--cpp` hxcpp, `--cppia` cppia, `--hl` HashLink. `"eval"` on a build for another target debugs its macros and writes no output. |
+| `target` | `"eval"`, `"hxcpp"`, `"cppia"`, `"hl"` or `"js"`. Without it, the build's output decides: `--interp` and `--run` use eval, `--cpp` hxcpp, `--cppia` cppia, `--hl` HashLink, `--js` JavaScript. `"eval"` on a build for another target debugs its macros and writes no output. |
 | `cwd` | Folder to run Haxe and the program in. Default: the project folder. |
-| `program` | hxcpp: the program to run. Without `hxml` and `haxeArgs`, nothing is built, so it must already be a `-debug` build with `-lib hxcpp-debug-server`. cppia: the host (see "cppia"). HashLink: the `.hl` file, if not the build's. |
-| `args`, `env` | hxcpp, cppia and HashLink: the program's arguments, and environment variables added to Zed's. |
+| `program` | hxcpp: the program to run. Without `hxml` and `haxeArgs`, nothing is built, so it must already be a `-debug` build with `-lib hxcpp-debug-server`. cppia: the host (see "cppia"). HashLink: the `.hl` file, if not the build's. JavaScript: the `.js` file, if not the build's; without `hxml` and `haxeArgs`, one already built, with its source maps. |
+| `args`, `env` | hxcpp, cppia, HashLink and JavaScript: the program's arguments, and environment variables added to Zed's. |
 | `port` | hxcpp and cppia: the port the program's debug server connects to (see "hxcpp" below). HashLink: the port the debugger talks to the VM on (default 6112). |
 | `hl` | HashLink: the VM to run the program with. Default: `hl` on your PATH. |
-| `stopOnEntry` | eval: pause before the first line runs. |
+| `runtimeExecutable` | JavaScript: the Node to run the program with. Default: `node` on your PATH, else the one Zed runs. |
+| `stopOnEntry` | eval and JavaScript: pause before the first line runs. |
 | `haxePath` | Haxe executable to use. |
 | `mergeScopes`, `showGeneratedVariables` | eval-debugger's own options, as in VS Code. |
 
@@ -139,6 +144,22 @@ preview. With the HashLink nightly of October 2026, which calls itself 2.0.0, th
 breakpoints but hashlink-debugger 2.0.0 reads its variables wrong. HashLink/C builds (`--hl main.c`)
 don't run in the VM, so they can't be debugged here.
 
+### JavaScript
+
+The bridge builds the hxml with `-debug -D js-source-map` and any `--cmd` left out, then runs the
+program with Node under js-debug, the debugger Zed's own JavaScript support uses. js-debug follows the
+source maps, so breakpoints go in the `.hx` files, and frames, stepping and the program's output point
+there too. Variables and the debug console are JavaScript's: the console takes JavaScript expressions,
+and names are the ones Haxe generated, which are mostly the Haxe ones.
+
+js-debug runs the program in a session of its own, which it asks the editor to open. The bridge opens
+it itself, so Zed shows one session, as for the other targets.
+
+Tested with Haxe 4.0.5, 4.1.5, 4.2.5, 4.3.7, the 5.0.0 preview and the nightly of October 2026.
+Browser JavaScript isn't supported yet; Zed's own
+JavaScript adapter can debug it, given `"pauseForSourceMap": false` and
+`"__workspaceFolder": "$ZED_WORKTREE_ROOT"`, without which breakpoints in `.hx` files don't take effect.
+
 ## Known issues
 
 - Haxe 5's eval reports threads under two different numbers and starts a thread for every value it
@@ -179,8 +200,8 @@ don't run in the VM, so they can't be debugged here.
 ## How it works
 
 `src/lib.rs` is a thin Rust layer: it downloads vshaxe's extension from Open VSX (eval-debugger has no
-releases of its own), and hxcpp-debug-server and hashlink-debugger from GitHub, then has Zed run
-`node bridge.js`. The bridge reads the debug configuration and picks the debugger.
+releases of its own), and hxcpp-debug-server, hashlink-debugger and js-debug from GitHub, then has Zed
+run `node bridge.js`. The bridge reads the debug configuration and picks the debugger.
 
 - eval: it starts eval-debugger and relays DAP messages between it and Zed, rewriting the `launch`
   request and fixing the replies Zed can't use (`bridge/src/bridge/targets/Eval*.hx`).
@@ -189,6 +210,8 @@ releases of its own), and hxcpp-debug-server and hashlink-debugger from GitHub, 
   (`targets/HxcppServer.hx`).
 - HashLink: it builds the program, asking Haxe for the class paths with a small macro on the way
   (`targets/HashLink.hx`), then starts hashlink-debugger and relays DAP messages as for eval.
+- JavaScript: it builds the program, starts js-debug's server, and relays DAP messages over TCP,
+  opening the program's session itself (`targets/JsDebugAdapter.hx`).
 
 ## Development
 
@@ -228,4 +251,4 @@ Add `"traceFile": "/some/file.log"` to a debug configuration to log every messag
 
 ## License
 
-MIT. eval-debugger, vshaxe, hxcpp-debugger and hashlink-debugger are MIT-licensed too.
+MIT. eval-debugger, vshaxe, hxcpp-debugger, hashlink-debugger and js-debug are MIT-licensed too.

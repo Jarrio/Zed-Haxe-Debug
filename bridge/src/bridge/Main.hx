@@ -7,7 +7,8 @@ import js.Node.process;
 
 /**
 	`node bridge.js --config <JSON> [--project <JSON>] [--eval <eval-debugger's index.js>]
-	[--hxcpp-debug-server <folder>] [--hashlink <hashlink-debugger's adapter.js>] [--trace <file>]`
+	[--hxcpp-debug-server <folder>] [--hashlink <hashlink-debugger's adapter.js>]
+	[--js-debug <js-debug's dapDebugServer.js>] [--trace <file>]`
 
 	Zed starts this as the debug adapter, in the workspace folder. `--config` is the debug configuration
 	and `--project` is Zed-Haxe's `project` settings. The bridge works out the session before Zed's first
@@ -35,6 +36,8 @@ class Main {
 					adapters.hxcppDebugServer = args[++i];
 				case "--hashlink":
 					adapters.hashlink = args[++i];
+				case "--js-debug":
+					adapters.jsDebug = args[++i];
 				case "--trace":
 					Log.traceFile = args[++i];
 				case other:

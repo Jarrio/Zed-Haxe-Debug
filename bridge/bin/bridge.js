@@ -387,6 +387,9 @@ class bridge_Main {
 			case "--hxcpp-debug-server":
 				adapters.hxcppDebugServer = args[++i];
 				break;
+			case "--js-debug":
+				adapters.jsDebug = args[++i];
+				break;
 			case "--project":
 				settings = JSON.parse(args[++i]);
 				break;
@@ -420,8 +423,9 @@ bridge_Main.__name__ = true;
 var bridge_AdapterKind = $hxEnums["bridge.AdapterKind"] = { __ename__:true,__constructs__:null
 	,Node: ($_=function(script) { return {_hx_index:0,script:script,__enum__:"bridge.AdapterKind",toString:$estr}; },$_._hx_name="Node",$_.__params__ = ["script"],$_)
 	,OwnHxcpp: {_hx_name:"OwnHxcpp",_hx_index:1,__enum__:"bridge.AdapterKind",toString:$estr}
+	,JsDebug: ($_=function(script) { return {_hx_index:2,script:script,__enum__:"bridge.AdapterKind",toString:$estr}; },$_._hx_name="JsDebug",$_.__params__ = ["script"],$_)
 };
-bridge_AdapterKind.__constructs__ = [bridge_AdapterKind.Node,bridge_AdapterKind.OwnHxcpp];
+bridge_AdapterKind.__constructs__ = [bridge_AdapterKind.Node,bridge_AdapterKind.OwnHxcpp,bridge_AdapterKind.JsDebug];
 class haxe_Exception extends Error {
 	constructor(message,previous,native) {
 		super(message);
@@ -486,7 +490,7 @@ class bridge_Planner {
 		let output = bridge_Planner.outputOf(bridge_project_Hxml.expand(haxeArgs,cwd));
 		let tmp = config.target;
 		let tmp1 = tmp != null ? tmp : output;
-		let target = tmp1 != null ? tmp1 : prebuilt ? haxe_io_Path.extension(config.program) == "hl" ? "hl" : "hxcpp" : "eval";
+		let target = tmp1 != null ? tmp1 : prebuilt ? bridge_Planner.prebuiltTarget(config.program) : "eval";
 		let tmp2 = bridge_toolchain_Haxerc.find(projectRoot,workspaceRoot);
 		let toolchain = bridge_toolchain_Toolchain.resolve({ workspaceRoot : workspaceRoot, projectRoot : projectRoot, haxerc : tmp2 != null ? tmp2.data : null, providerHaxePath : null, env : env},config.haxePath == null ? settings : { haxePath : config.haxePath});
 		let _g = 0;
@@ -506,9 +510,22 @@ class bridge_Planner {
 			return { target : target, adapter : bridge_AdapterKind.Node(bridge_Planner.installed(adapters.hashlink,"hashlink-debugger")), cwd : cwd, 'arguments' : launch.arguments, filters : [new bridge_dap_BodylessResponses()], prelaunch : bridge_targets_HashLink.prelaunch(launch.arguments,launch.build)};
 		case "hxcpp":
 			return { target : target, adapter : bridge_AdapterKind.OwnHxcpp, cwd : cwd, 'arguments' : bridge_targets_Hxcpp.launch(config,haxeArgs,cwd,toolchain,adapters.hxcppDebugServer), filters : []};
+		case "js":
+			let launch1 = bridge_targets_JavaScript.launch(config,haxeArgs,cwd,projectRoot,toolchain,env);
+			return { target : target, adapter : bridge_AdapterKind.JsDebug(bridge_Planner.installed(adapters.jsDebug,"js-debug")), cwd : cwd, 'arguments' : launch1.arguments, filters : [], prelaunch : launch1.build == null ? null : bridge_targets_JavaScript.prelaunch(launch1.arguments,launch1.build)};
 		default:
 			let other = target;
 			throw new bridge_LaunchError("Debugging " + other + " builds isn't supported yet. To debug this build's macros, set \"target\": \"eval\".");
+		}
+	}
+	static prebuiltTarget(program) {
+		switch(haxe_io_Path.extension(program)) {
+		case "hl":
+			return "hl";
+		case "cjs":case "js":case "mjs":
+			return "js";
+		default:
+			return "hxcpp";
 		}
 	}
 	static outputOf(args) {
@@ -674,6 +691,10 @@ class bridge_Session {
 			break;
 		case 1:
 			$debugger = new bridge_targets_HxcppAdapter();
+			break;
+		case 2:
+			let script1 = _g.script;
+			$debugger = new bridge_targets_JsDebugAdapter(script1,plan.cwd);
 			break;
 		}
 		let _gthis = this;
@@ -1853,6 +1874,341 @@ class bridge_targets_HxcppServer {
 	}
 }
 bridge_targets_HxcppServer.__name__ = true;
+class bridge_targets_JavaScript {
+	static launch(config,haxeArgs,cwd,projectRoot,toolchain,env) {
+		let args = haxeArgs.length == 0 ? null : bridge_project_HaxeArgs.withoutCommands(bridge_Planner.compilationFor(bridge_project_Hxml.expand(haxeArgs,cwd),"js"));
+		let program = config.program != null ? bridge_Planner.absolute(cwd,config.program) : bridge_project_HaxeArgs.output(args,["-js","--js"],cwd);
+		let tmp = config.args;
+		let tmp1 = config.env;
+		let tmp2 = config.runtimeExecutable;
+		let tmp3 = tmp2 != null ? tmp2 : bridge_util_Files.executable("node",env,cwd);
+		let $arguments = tmp3 != null ? tmp3 : process.execPath;
+		let tmp4 = config.stopOnEntry;
+		let arguments1 = { type : "pwa-node", request : "launch", program : program, cwd : cwd, args : tmp != null ? tmp : [], env : tmp1 != null ? tmp1 : { }, console : "internalConsole", runtimeExecutable : $arguments, stopOnEntry : tmp4 != null && tmp4, sourceMaps : true, __workspaceFolder : projectRoot, pauseForSourceMap : false, outFiles : [haxe_io_Path.join([haxe_io_Path.directory(program),"**","*.js"])]};
+		return { 'arguments' : arguments1, build : args == null ? null : { executable : toolchain.path, args : args.concat(["-debug","-D","js-source-map"]), cwd : cwd, env : toolchain.env}};
+	}
+	static prelaunch($arguments,build) {
+		return { build : build, run : function(output) {
+			return bridge_Build.run(build,output).then(function(_) {
+				if(!sys_FileSystem.exists($arguments.program)) {
+					return Promise.reject("The build didn't make " + Std.string($arguments.program) + ". If it writes the program elsewhere, set \"program\" in the debug configuration.");
+				}
+				return $arguments;
+			});
+		}};
+	}
+}
+bridge_targets_JavaScript.__name__ = true;
+class bridge_targets_JsDebugAdapter {
+	constructor(script,cwd) {
+		this.reverse = new haxe_ds_IntMap();
+		this.own = new haxe_ds_IntMap();
+		this.seq = 1000000000;
+		this.breakpoints = new haxe_ds_StringMap();
+		this.initializeArguments = { };
+		this.early = [];
+		this.terminated = false;
+		this.closed = false;
+		this.launched = false;
+		this.childReady = false;
+		this.port = 0;
+		this.onClose = function(_) {
+		};
+		this.onMessage = function(_) {
+		};
+		let _gthis = this;
+		bridge_targets_JsDebugAdapter.freePort().then(function(free) {
+			_gthis.port = free;
+			_gthis.start(script,cwd);
+		},function(error) {
+			_gthis.fail("Couldn't find a free port for js-debug: " + error);
+		});
+	}
+	start(script,cwd) {
+		let server = Std.string(this.port);
+		let server1 = js_node_ChildProcess.spawn(process.execPath,[script,server,"127.0.0.1"],{ cwd : cwd, windowsHide : true});
+		this.serverProcess = server1;
+		let listening = false;
+		let _gthis = this;
+		let timer = haxe_Timer.delay(function() {
+			if(!listening) {
+				_gthis.fail("js-debug didn't start within " + 10 + " seconds.");
+			}
+		},10000);
+		server1.stdout.on("data",function(chunk) {
+			if(!listening && chunk.toString().indexOf("listening") >= 0) {
+				listening = true;
+				timer.stop();
+				_gthis.connect(function(connection) {
+					_gthis.root = connection;
+					connection.onMessage = $bind(_gthis,_gthis.fromRoot);
+					let _g = 0;
+					let _g1 = _gthis.early;
+					while(_g < _g1.length) {
+						let message = _g1[_g];
+						++_g;
+						_gthis.send(message);
+					}
+					_gthis.early.length = 0;
+				});
+			}
+		});
+		server1.stderr.on("data",function(chunk) {
+			return process.stderr.write(chunk);
+		});
+		server1.on("error",function(error) {
+			_gthis.fail("Couldn't start js-debug: " + error.message);
+		});
+		server1.on("close",function(code,_) {
+			if(!_gthis.closed) {
+				bridge_Log.info("js-debug exited (code " + code + ")");
+				_gthis.finish();
+				let tmp = code;
+				_gthis.close(tmp != null ? tmp : 1);
+			}
+		});
+	}
+	connect(connected) {
+		let socket = js_node_Net.connect(this.port,"127.0.0.1");
+		socket.on("connect",function() {
+			connected(new bridge_dap_Connection(socket,socket));
+		});
+		socket.on("error",function(error) {
+			bridge_Log.info("js-debug connection: " + error.message);
+		});
+	}
+	send(message) {
+		let root = this.root;
+		if(root == null) {
+			this.early.push(message);
+			return;
+		}
+		if(message.type == "response") {
+			let origin = this.reverse.h[message.request_seq];
+			if(origin != null) {
+				this.reverse.remove(message.request_seq);
+				message.request_seq = origin.seq;
+				origin.connection.send(message);
+			}
+			return;
+		}
+		let target = this.childReady ? this.child : root;
+		let _g = message.command;
+		if(_g == null) {
+			target.send(message);
+		} else {
+			switch(_g) {
+			case "initialize":
+				this.initializeArguments = message.arguments;
+				root.send(message);
+				break;
+			case "launch":
+				this.launched = true;
+				root.send(message);
+				break;
+			case "setBreakpoints":
+				this.breakpoints.h[message.arguments.source.path] = message.arguments;
+				target.send(message);
+				break;
+			case "setExceptionBreakpoints":
+				this.exceptionBreakpoints = message.arguments;
+				target.send(message);
+				break;
+			case "disconnect":case "terminate":
+				if(!this.launched) {
+					this.onMessage({ seq : ++this.seq, type : "response", request_seq : message.seq, command : message.command, success : true});
+					if(message.command == "disconnect") {
+						this.close(0);
+					}
+				} else {
+					let child = this.child;
+					if(child != null) {
+						this.request(child,message.command,message.arguments);
+					}
+					root.send(message);
+				}
+				break;
+			default:
+				target.send(message);
+			}
+		}
+	}
+	fromRoot(message) {
+		if(this.consume(message,this.root)) {
+			return;
+		}
+		if(message.type == "request" && message.command == "startDebugging") {
+			this.answer(this.root,message);
+			if(this.child == null) {
+				this.startChild(message.arguments);
+			}
+			return;
+		}
+		if(message.type == "event" && message.event == "terminated") {
+			if(this.child == null) {
+				this.finish();
+			}
+			return;
+		}
+		if(message.type == "response" && message.command == "disconnect") {
+			this.onMessage(message);
+			this.close(0);
+			return;
+		}
+		this.onMessage(message);
+	}
+	fromChild(message) {
+		if(this.consume(message,this.child)) {
+			return;
+		}
+		if(message.type == "request" && message.command == "startDebugging") {
+			this.answer(this.child,message);
+			return;
+		}
+		if(message.type == "event") {
+			let _g = message.event;
+			if(_g != null) {
+				switch(_g) {
+				case "initialized":
+					return;
+				case "terminated":
+					this.finish();
+					return;
+				default:
+				}
+			}
+		}
+		this.onMessage(message);
+	}
+	startChild($arguments) {
+		let _gthis = this;
+		this.connect(function(connection) {
+			_gthis.child = connection;
+			let initialized = function() {
+			};
+			let ready = new Promise(function(resolve,_) {
+				initialized = function() {
+					resolve(null);
+				};
+			});
+			connection.onMessage = function(message) {
+				if(message.type == "event" && message.event == "initialized") {
+					initialized();
+				}
+				_gthis.fromChild(message);
+			};
+			_gthis.request(connection,"initialize",_gthis.initializeArguments).then(function(_) {
+				let launched = _gthis.request(connection,$arguments.request,$arguments.configuration);
+				return ready.then(function(_) {
+					let _g = [];
+					let h = _gthis.breakpoints.h;
+					let args_h = h;
+					let args_keys = Object.keys(h);
+					let args_length = args_keys.length;
+					let args_current = 0;
+					while(args_current < args_length) {
+						let args = args_h[args_keys[args_current++]];
+						_g.push(_gthis.request(connection,"setBreakpoints",args));
+					}
+					return Promise.all(_g);
+				}).then(function(_) {
+					if(_gthis.exceptionBreakpoints == null) {
+						return Promise.resolve(null);
+					} else {
+						return _gthis.request(connection,"setExceptionBreakpoints",_gthis.exceptionBreakpoints);
+					}
+				}).then(function(_) {
+					return _gthis.request(connection,"configurationDone",{ });
+				}).then(function(_) {
+					return launched;
+				});
+			}).then(function(response) {
+				if(!response.success) {
+					bridge_Log.info("js-debug's program session didn't start: " + response.message);
+				}
+				_gthis.childReady = true;
+			});
+		});
+	}
+	request(connection,command,$arguments) {
+		let _gthis = this;
+		return new Promise(function(resolve,_) {
+			let message = { seq : ++_gthis.seq, type : "request", command : command, 'arguments' : $arguments};
+			_gthis.own.h[message.seq] = resolve;
+			bridge_Log.message("bridge (to js-debug)",message);
+			connection.send(message);
+		});
+	}
+	consume(message,connection) {
+		if(message.type == "response") {
+			let handler = this.own.h[message.request_seq];
+			if(handler != null) {
+				this.own.remove(message.request_seq);
+				handler(message);
+				return true;
+			}
+			return false;
+		}
+		if(message.type == "request" && message.command != "startDebugging") {
+			let forwarded = ++this.seq;
+			this.reverse.h[forwarded] = { connection : connection, seq : message.seq};
+			message.seq = forwarded;
+			this.onMessage(message);
+			return true;
+		}
+		return false;
+	}
+	answer(connection,request) {
+		connection.send({ seq : ++this.seq, type : "response", request_seq : request.seq, command : request.command, success : true});
+	}
+	finish() {
+		if(!this.terminated) {
+			this.terminated = true;
+			this.onMessage({ seq : ++this.seq, type : "event", event : "terminated"});
+		}
+	}
+	fail(reason) {
+		bridge_Log.info(reason);
+		let _g = 0;
+		let _g1 = this.early;
+		while(_g < _g1.length) {
+			let message = _g1[_g];
+			++_g;
+			if(message.type == "request") {
+				this.onMessage({ seq : ++this.seq, type : "response", request_seq : message.seq, command : message.command, success : false, message : reason});
+			}
+		}
+		this.early.length = 0;
+		this.close(1);
+	}
+	close(code) {
+		if(this.closed) {
+			return;
+		}
+		this.closed = true;
+		this.kill();
+		this.onClose(code);
+	}
+	kill() {
+		let tmp = this.serverProcess;
+		if(tmp != null) {
+			tmp.kill();
+		}
+	}
+	static freePort() {
+		return new Promise(function(resolve,reject) {
+			let probe = js_node_Net.createServer();
+			probe.on("error",reject);
+			probe.listen(0,"127.0.0.1",function() {
+				let port = probe.address().port;
+				probe.close(function() {
+					resolve(port);
+				});
+			});
+		});
+	}
+}
+bridge_targets_JsDebugAdapter.__name__ = true;
 class bridge_toolchain_Haxerc {
 	static find(projectRoot,workspaceRoot) {
 		let stop = haxe_io_Path.normalize(workspaceRoot);
@@ -3004,7 +3360,7 @@ if( String.fromCodePoint == null ) String.fromCodePoint = function(c) { return c
 js_Boot.__toStr = ({ }).toString;
 bridge_Build.running = [];
 bridge_Build.stopped = false;
-bridge_Planner.supported = ["eval","hxcpp","cppia","hl"];
+bridge_Planner.supported = ["eval","hxcpp","cppia","hl","js"];
 bridge_dap_BodylessResponses.commands = ["attach","launch","configurationDone","disconnect","terminate","restart","next","stepIn","stepOut","stepBack","reverseContinue","restartFrame","goto","pause","terminateThreads","cancel"];
 bridge_dap_Connection.contentLength = new EReg("Content-Length:\\s*(\\d+)","i");
 bridge_targets_HashLink.helper = "zed.haxedebug.ClassPaths";

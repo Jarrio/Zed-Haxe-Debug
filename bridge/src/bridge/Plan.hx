@@ -8,6 +8,7 @@ import bridge.project.HaxeArgs;
 import bridge.project.Hxml;
 import bridge.targets.Eval;
 import bridge.targets.HashLink;
+import bridge.targets.JavaScript;
 import bridge.targets.Hxcpp;
 import bridge.toolchain.Haxerc;
 import bridge.toolchain.Toolchain;
@@ -33,6 +34,7 @@ typedef LaunchConfig = {
 	var ?showGeneratedVariables:Bool;
 	var ?program:String;
 	var ?hl:String;
+	var ?runtimeExecutable:String;
 	var ?args:Array<String>;
 	var ?env:DynamicAccess<String>;
 	var ?port:Int;
@@ -48,6 +50,9 @@ typedef Adapters = {
 
 	/** hashlink-debugger's adapter.js. **/
 	var ?hashlink:String;
+
+	/** js-debug's dapDebugServer.js. **/
+	var ?jsDebug:String;
 }
 
 /** Work before the debugger gets `launch`, for a debugger that doesn't build the program itself. **/
@@ -67,6 +72,9 @@ enum AdapterKind {
 
 	/** The bridge's own hxcpp adapter. **/
 	OwnHxcpp;
+
+	/** js-debug's server script, run as one session (`JsDebugAdapter`). **/
+	JsDebug(script:String);
 }
 
 /** A debugger ready to start in `cwd`, which then gets `launch` with `arguments`. **/
@@ -101,7 +109,7 @@ class Planner {
 		final prebuilt = config.program != null && config.haxeArgs == null && config.hxml == null;
 		final haxeArgs = prebuilt ? [] : (config.haxeArgs ?? hxmlArgs(config.hxml == null ? defaultHxml(projectRoot, settings) : absolute(cwd, config.hxml), cwd));
 		final output = outputOf(Hxml.expand(haxeArgs, cwd));
-		final target = config.target ?? output ?? (prebuilt ? (Path.extension(config.program) == "hl" ? "hl" : "hxcpp") : "eval");
+		final target = config.target ?? output ?? (prebuilt ? prebuiltTarget(config.program) : "eval");
 		final toolchain = Toolchain.resolve({
 			workspaceRoot: workspaceRoot,
 			projectRoot: projectRoot,
@@ -139,6 +147,16 @@ class Planner {
 					filters: [new BodylessResponses()],
 					prelaunch: HashLink.prelaunch(launch.arguments, launch.build)
 				};
+			case "js":
+				final launch = JavaScript.launch(config, haxeArgs, cwd, projectRoot, toolchain, env);
+				{
+					target: target,
+					adapter: JsDebug(installed(adapters.jsDebug, "js-debug")),
+					cwd: cwd,
+					arguments: launch.arguments,
+					filters: [],
+					prelaunch: launch.build == null ? null : JavaScript.prelaunch(launch.arguments, launch.build)
+				};
 			case "cppia":
 				{
 					target: target,
@@ -152,8 +170,17 @@ class Planner {
 		}
 	}
 
+	/** The debugger for a program named without a build, from its file name. **/
+	static function prebuiltTarget(program:String):String {
+		return switch Path.extension(program) {
+			case "hl": "hl";
+			case "js" | "cjs" | "mjs": "js";
+			case _: "hxcpp";
+		}
+	}
+
 	/** The outputs a debugger here supports. **/
-	static final supported = ["eval", "hxcpp", "cppia", "hl"];
+	static final supported = ["eval", "hxcpp", "cppia", "hl", "js"];
 
 	/**
 		The debugger a build needs: that of the first compilation in it that a debugger here supports, else

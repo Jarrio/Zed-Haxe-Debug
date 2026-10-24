@@ -8,8 +8,8 @@
     },
     "target": {
       "type": "string",
-      "enum": ["eval", "hxcpp", "cppia", "hl"],
-      "description": "Which debugger to use. Without it, the build's output decides: --interp and --run use eval, --cpp hxcpp, --cppia a cppia host (see program), --hl HashLink. \"eval\" with any other build debugs its macros and writes no output."
+      "enum": ["eval", "hxcpp", "cppia", "hl", "js"],
+      "description": "Which debugger to use. Without it, the build's output decides: --interp and --run use eval, --cpp hxcpp, --cppia a cppia host (see program), --hl HashLink, --js js-debug with Node. \"eval\" with any other build debugs its macros and writes no output."
     },
     "hxml": {
       "type": "string",
@@ -24,21 +24,21 @@
     },
     "program": {
       "type": "string",
-      "description": "hxcpp: the program to run, relative to cwd. Without hxml or haxeArgs, a program already built (with -debug and hxcpp-debug-server), so nothing is built. Default: the executable the build makes. cppia: the host that runs the script, an hxcpp -debug build with -D scriptable and hxcpp-debug-server. HashLink: the .hl file to run. Default: the build's."
+      "description": "hxcpp: the program to run, relative to cwd. Without hxml or haxeArgs, a program already built (with -debug and hxcpp-debug-server), so nothing is built. Default: the executable the build makes. cppia: the host that runs the script, an hxcpp -debug build with -D scriptable and hxcpp-debug-server. HashLink: the .hl file to run. Default: the build's. JavaScript: the .js file to run. Default: the build's. Without hxml or haxeArgs, a program already built, with its source maps."
     },
     "args": {
       "type": "array",
       "items": {
         "type": "string"
       },
-      "description": "hxcpp, cppia and HashLink: the program's arguments. For cppia, default: the script's path."
+      "description": "hxcpp, cppia, HashLink and JavaScript: the program's arguments. For cppia, default: the script's path."
     },
     "env": {
       "type": "object",
       "additionalProperties": {
         "type": "string"
       },
-      "description": "hxcpp, cppia and HashLink: environment variables for the program, added to Zed's."
+      "description": "hxcpp, cppia, HashLink and JavaScript: environment variables for the program, added to Zed's."
     },
     "port": {
       "type": "integer",
@@ -48,13 +48,17 @@
       "type": "string",
       "description": "HashLink: the VM to run the program with. Default: hl on PATH."
     },
+    "runtimeExecutable": {
+      "type": "string",
+      "description": "JavaScript: the Node to run the program with. Default: node on PATH, else the one Zed runs."
+    },
     "cwd": {
       "type": "string",
       "description": "Folder to run Haxe and the hxcpp program in. Default: the project folder."
     },
     "stopOnEntry": {
       "type": "boolean",
-      "description": "eval: pause before the first line runs.",
+      "description": "eval and JavaScript: pause before the first line runs.",
       "default": false
     },
     "haxePath": {

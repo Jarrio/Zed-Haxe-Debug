@@ -2,8 +2,8 @@
 //!
 //! Like Zed-Haxe, this only downloads and starts things. Zed runs `node bridge.js` as the debug adapter;
 //! the bridge, written in Haxe under `bridge/`, works out the project, the Haxe to use and which debugger
-//! fits, then debugs: through vshaxe's eval-debugger or hashlink-debugger, or for hxcpp itself, with
-//! hxcpp-debug-server compiled into the program.
+//! fits, then debugs: through vshaxe's eval-debugger or hashlink-debugger, Microsoft's js-debug, or for
+//! hxcpp itself, with hxcpp-debug-server compiled into the program.
 
 use std::{env, fs};
 
@@ -33,6 +33,10 @@ const HXCPP_DEBUG_SERVER: &str = "hxcpp-debug-server/haxelib.json";
 /// hashlink-debugger, from its GitHub release (the VS Code extension's .vsix).
 const HASHLINK_DEBUGGER_VERSION: &str = "2.0.0";
 const HASHLINK_ADAPTER: &str = "extension/adapter.js";
+
+/// js-debug, the debugger behind Zed's own JavaScript support, from its GitHub release.
+const JS_DEBUG_VERSION: &str = "v1.140.0";
+const JS_DEBUG_SERVER: &str = "js-debug/src/dapDebugServer.js";
 
 /// Zed-Haxe's language server; its `project` settings (Haxe path, project root, hxml) apply here too.
 const LANGUAGE_SERVER: &str = "haxe-language-server";
@@ -82,12 +86,14 @@ impl zed::Extension for HaxeDebugExtension {
             "vshaxe",
             VSHAXE_VERSION,
             &format!("https://open-vsx.org/api/nadako/vshaxe/{VSHAXE_VERSION}/file/nadako.vshaxe-{VSHAXE_VERSION}.vsix"),
+            DownloadedFileType::Zip,
             EVAL_ADAPTER,
         );
         let server = download(
             "hxcpp-debugger",
             HXCPP_DEBUGGER_COMMIT,
             &format!("https://github.com/{HXCPP_DEBUGGER_REPOSITORY}/archive/{HXCPP_DEBUGGER_COMMIT}.zip"),
+            DownloadedFileType::Zip,
             HXCPP_DEBUG_SERVER,
         );
         let hashlink = download(
@@ -96,12 +102,23 @@ impl zed::Extension for HaxeDebugExtension {
             &format!(
                 "https://github.com/vshaxe/hashlink-debugger/releases/download/{HASHLINK_DEBUGGER_VERSION}/haxe-hl-{HASHLINK_DEBUGGER_VERSION}.vsix"
             ),
+            DownloadedFileType::Zip,
             HASHLINK_ADAPTER,
+        );
+        let js_debug = download(
+            "js-debug",
+            JS_DEBUG_VERSION,
+            &format!(
+                "https://github.com/microsoft/vscode-js-debug/releases/download/{JS_DEBUG_VERSION}/js-debug-dap-{JS_DEBUG_VERSION}.tar.gz"
+            ),
+            DownloadedFileType::GzipTar,
+            JS_DEBUG_SERVER,
         );
         for (flag, path) in [
             ("--eval", eval),
             ("--hxcpp-debug-server", server.map(|file| parent(&file))),
             ("--hashlink", hashlink),
+            ("--js-debug", js_debug),
         ] {
             match path {
                 Ok(path) => arguments.extend([flag.to_string(), path]),
@@ -224,16 +241,22 @@ fn is_haxe(command: &str) -> bool {
     matches!(name, "haxe" | "haxe.exe" | "haxe.cmd")
 }
 
-/// Absolute path of `file` in the zip at `url`, unpacked into `{name}-{version}` on first use. Offline,
-/// falls back to a version downloaded earlier. `file` may also sit one folder down, as in GitHub's
-/// archives, whose files are all in `{repository}-{commit}/`.
-fn download(name: &str, version: &str, url: &str, file: &str) -> Result<String> {
+/// Absolute path of `file` in the archive at `url`, unpacked into `{name}-{version}` on first use.
+/// Offline, falls back to a version downloaded earlier. `file` may also sit one folder down, as in
+/// GitHub's archives, whose files are all in `{repository}-{commit}/`.
+fn download(
+    name: &str,
+    version: &str,
+    url: &str,
+    kind: DownloadedFileType,
+    file: &str,
+) -> Result<String> {
     let dir = format!("{name}-{version}");
     if let Some(path) = find(&dir, file) {
         return absolute(&path);
     }
     // A .vsix is a zip file too.
-    match zed::download_file(url, &dir, DownloadedFileType::Zip) {
+    match zed::download_file(url, &dir, kind) {
         Ok(()) => {
             let path = find(&dir, file).ok_or_else(|| format!("{url} has no {file}"))?;
             remove_other_versions(name, &dir);

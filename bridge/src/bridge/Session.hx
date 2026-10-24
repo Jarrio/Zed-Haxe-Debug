@@ -7,6 +7,7 @@ import bridge.dap.Filter;
 import bridge.dap.Message;
 import bridge.dap.NodeAdapter;
 import bridge.targets.HxcppAdapter;
+import bridge.targets.JsDebugAdapter;
 import js.Node.process;
 import js.lib.Promise;
 
@@ -51,6 +52,7 @@ class Session {
 		final debugger:Adapter = switch plan.adapter {
 			case Node(script): new NodeAdapter(script, plan.cwd);
 			case OwnHxcpp: new HxcppAdapter();
+			case JsDebug(script): new JsDebugAdapter(script, plan.cwd);
 		};
 		debugger.onMessage = function(message) {
 			Log.message("debugger", message);
