@@ -387,6 +387,11 @@ const tests = {
     const { threadId, frame, stopped } = await runToBreakpoint(session, file, line);
     check(threadId !== 0 && frame.line === line, `stopped on thread ${threadId} at line ${frame.line}`);
     check(stopped.body.allThreadsStopped === true, "the other threads weren't stopped");
+    // The main thread, waiting in native code (starting the other worker, or in lock.wait()), can't stop
+    // there, but shows where it is.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const main = (await client.request("stackTrace", { threadId: 0 })).body.stackFrames;
+    check(main.some((f) => f.name === "Main.main"), `the main thread is at ${JSON.stringify(main.slice(0, 3))}`);
     // A step steps the stopped thread, not the main one.
     const stepped = client.nextEvent("stopped");
     await client.request("next", { threadId });
