@@ -169,7 +169,8 @@ Tested with:
 |---|---|
 | 4.3.2, the haxelib release | 4.0.5, 4.1.5, 4.2.5, 4.3.7 |
 | [libhxcpp](https://github.com/openfl/libhxcpp) (main, October 2026) | 4.3.7 |
-| git master (October 2026) | 4.3.7, 5.0.0-preview.1 |
+| git master (October 2026) | 4.3.7, Haxe 5 nightlies |
+| git, July 2025 (a428509) | the 5.0.0-preview.1 release (later hxcpp doesn't build it) |
 
 ### cppia
 
@@ -379,8 +380,6 @@ program that has them. Tested with HashLink 1.16 and the October 2026 nightly, w
   and a field that doesn't exist reads as `null`.
 - Haxe unrolls a loop over a small constant range, such as `for (i in 0...10)`, even in a debug build,
   so hxcpp has no `i` to show inside it.
-- The Haxe 5 nightly of October 2026 can't build any program that uses `sys.thread.Thread.current()`
-  against hxcpp master of the same month, and the debug server uses it.
 - HashLink reports a finished step as a stop at a breakpoint.
 
 ## How it works

@@ -35,6 +35,9 @@ typedef HxcppLaunch = {
 	**/
 	final ?launcher:Bool;
 
+	/** `program` is a cppia host built elsewhere, not what `build` makes (the script). **/
+	final ?host:Bool;
+
 	/** Whether a thread's stop stops the others too (the default). Needs the debug server the extension brings. **/
 	var ?stopAllThreads:Bool;
 }
@@ -109,7 +112,8 @@ class Hxcpp {
 			cwd: cwd,
 			env: config.env ?? {},
 			// Built elsewhere, like a program named without a build.
-			port: config.port ?? defaultPort
+			port: config.port ?? defaultPort,
+			host: true
 		};
 	}
 

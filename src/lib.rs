@@ -27,7 +27,7 @@ const EVAL_ADAPTER: &str = "extension/eval-debugger/bin/index.js";
 /// hxcpp-debug-server, the library the bridge compiles into hxcpp programs, from this fork of
 /// vshaxe/hxcpp-debugger. The haxelib release (1.2.4) predates fixes the bridge relies on.
 const HXCPP_DEBUGGER_REPOSITORY: &str = "Jarrio/hxcpp-debugger";
-const HXCPP_DEBUGGER_COMMIT: &str = "59e4744569ca9bfec15a6062b7675523a939ae31";
+const HXCPP_DEBUGGER_COMMIT: &str = "3bd889e51fc01544615094f66c4780a5e0bdc59e";
 const HXCPP_DEBUG_SERVER: &str = "hxcpp-debug-server/haxelib.json";
 
 /// hashlink-debugger, from its GitHub release (the VS Code extension's .vsix).

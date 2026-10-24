@@ -845,6 +845,9 @@ function download(url, file, redirects = 5) {
   });
 }
 
+// A test that fails early can leave a request waiting, whose timeout would otherwise end the run.
+process.on("unhandledRejection", (error) => console.log(`  (after the test: ${error?.message ?? error})`));
+
 async function main() {
   const hxcpp = hxcppInstalled();
   const cppia = cppiaMissing();

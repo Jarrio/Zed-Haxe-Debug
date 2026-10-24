@@ -311,13 +311,24 @@ class HxcppAdapter implements Adapter {
 		if (killed) {
 			return Promise.reject("The session ended.");
 		}
-		final name = Path.withoutDirectory(launch.program);
 		final launcher = launch.launcher == true;
+		// A program named in the configuration may leave out Windows' .exe.
+		final executable = !launcher && process.platform == "win32" && !FileSystem.exists(launch.program)
+			&& FileSystem.exists('${launch.program}.exe') ? '${launch.program}.exe' : launch.program;
+		final name = Path.withoutDirectory(executable);
 		final env = Build.environment(launch.env);
 		// A launcher, such as `haxelib run lime test`, is found on PATH, through cmd.exe for a .cmd on Windows.
-		final start = launcher ? Exec.prepare(launch.program, launch.args, {cwd: launch.cwd, env: env}) : {file: launch.program, args: launch.args, verbatim: false};
-		if (start == null || (!launcher && !FileSystem.exists(launch.program))) {
-			return Promise.reject(launcher ? '${launch.program} was not found.' : launch.build == null ? '${launch.program} doesn\'t exist.' : 'The build didn\'t make ${launch.program}. If it writes the program elsewhere, set "program" in the debug configuration.');
+		final start = launcher ? Exec.prepare(executable, launch.args, {cwd: launch.cwd, env: env}) : {file: executable, args: launch.args, verbatim: false};
+		if (start == null || (!launcher && !FileSystem.exists(executable))) {
+			return Promise.reject(if (launcher) {
+				'$executable was not found.';
+			} else if (launch.host == true) {
+				'The host $executable doesn\'t exist. Build it first: an hxcpp -debug build with -D scriptable and hxcpp-debug-server.';
+			} else if (launch.build == null) {
+				'$executable doesn\'t exist.';
+			} else {
+				'The build didn\'t make $executable. If it writes the program elsewhere, set "program" in the debug configuration.';
+			});
 		}
 		return new Promise(function(resolve, reject) {
 			final listener = Net.createServer();

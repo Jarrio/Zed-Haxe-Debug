@@ -54,9 +54,9 @@ jobs:
         with:
           haxe-version: ${{ matrix.haxe }}
       # hxcpp, for the hxcpp tests, which also need the C++ compiler each runner has: the haxelib release
-      # for Haxe 4, and from git for Haxe 5, which refuses the release. The preview gets the commit it was
-      # tested with. The nightly gets master, which may not build the debug server (see the README's
-      # known issues); its failures show without failing the run.
+      # for Haxe 4, and from git for Haxe 5, which refuses the release. The 5.0.0-preview.1 release gets
+      # hxcpp from its release date (July 2025): later hxcpp doesn't build its sys.thread classes. The
+      # nightly gets master; its failures show without failing the run.
       - name: hxcpp (haxelib)
         if: startsWith(matrix.haxe, '4.')
         run: haxelib install hxcpp --quiet --always
@@ -65,7 +65,7 @@ jobs:
         shell: bash
         run: |
           git clone --quiet https://github.com/HaxeFoundation/hxcpp "$RUNNER_TEMP/hxcpp"
-          if [ "${{ matrix.haxe }}" != latest ]; then git -C "$RUNNER_TEMP/hxcpp" checkout --quiet 504403dbcc0f289dba818ca53685a584f671ddc3; fi
+          if [ "${{ matrix.haxe }}" != latest ]; then git -C "$RUNNER_TEMP/hxcpp" checkout --quiet a428509569b8fa251f2317aa0fe9ed2de1927980; fi
           haxelib dev hxcpp "$RUNNER_TEMP/hxcpp"
           (cd "$RUNNER_TEMP/hxcpp/tools/hxcpp" && haxe compile.hxml)
       # For the HashLink tests: HashLink 1.16, the stable release, which has no Linux binary, so Linux

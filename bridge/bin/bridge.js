@@ -1853,7 +1853,7 @@ class bridge_targets_Hxcpp {
 		let tmp2 = config.args;
 		let tmp3 = config.env;
 		let tmp4 = config.port;
-		return { build : tmp, program : tmp1, args : tmp2 != null ? tmp2 : [script], cwd : cwd, env : tmp3 != null ? tmp3 : { }, port : tmp4 != null ? tmp4 : 6972};
+		return { build : tmp, program : tmp1, args : tmp2 != null ? tmp2 : [script], cwd : cwd, env : tmp3 != null ? tmp3 : { }, port : tmp4 != null ? tmp4 : 6972, host : true};
 	}
 	static executable(args,cwd) {
 		let output = bridge_project_HaxeArgs.output(args,["-cpp","--cpp"],cwd);
@@ -2190,12 +2190,13 @@ class bridge_targets_HxcppAdapter {
 		if(this.killed) {
 			return Promise.reject("The session ended.");
 		}
-		let name = haxe_io_Path.withoutDirectory(launch.program);
 		let launcher = launch.launcher == true;
+		let executable = !launcher && process.platform == "win32" && !sys_FileSystem.exists(launch.program) && sys_FileSystem.exists("" + launch.program + ".exe") ? "" + launch.program + ".exe" : launch.program;
+		let name = haxe_io_Path.withoutDirectory(executable);
 		let env = bridge_Build.environment(launch.env);
-		let start = launcher ? bridge_util_Exec.prepare(launch.program,launch.args,{ cwd : launch.cwd, env : env}) : { file : launch.program, args : launch.args, verbatim : false};
-		if(start == null || !launcher && !sys_FileSystem.exists(launch.program)) {
-			return Promise.reject(launcher ? "" + launch.program + " was not found." : launch.build == null ? "" + launch.program + " doesn't exist." : "The build didn't make " + launch.program + ". If it writes the program elsewhere, set \"program\" in the debug configuration.");
+		let start = launcher ? bridge_util_Exec.prepare(executable,launch.args,{ cwd : launch.cwd, env : env}) : { file : executable, args : launch.args, verbatim : false};
+		if(start == null || !launcher && !sys_FileSystem.exists(executable)) {
+			return Promise.reject(launcher ? "" + executable + " was not found." : launch.host == true ? "The host " + executable + " doesn't exist. Build it first: an hxcpp -debug build with -D scriptable and hxcpp-debug-server." : launch.build == null ? "" + executable + " doesn't exist." : "The build didn't make " + executable + ". If it writes the program elsewhere, set \"program\" in the debug configuration.");
 		}
 		let _gthis = this;
 		return new Promise(function(resolve,reject) {

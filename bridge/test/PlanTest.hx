@@ -130,6 +130,8 @@ class PlanTest extends utest.Test {
 		Assert.equals(dir, launch.cwd);
 	}
 
+	// Runs a stand-in script, which Windows starts slowly.
+	@:timeout(10000)
 	function testHashLinkGetsTheClassPathsFromTheBuild(async:utest.Async) {
 		final dir = Fixture.create({"build.hxml": "-cp src\n-main Main\n--hl bin/main.hl"});
 		// Does what the build's helper macro does: writes the class paths, its own folder among them.
@@ -278,6 +280,8 @@ class PlanTest extends utest.Test {
 		Assert.equals("pwa-chrome", plan.arguments.type);
 	}
 
+	// Runs a stand-in script, which Windows starts slowly.
+	@:timeout(10000)
 	function testCeramicDesktopAddsTheDebugServerToItsHxml(async:utest.Async) {
 		final dir = Fixture.create({"ceramic.yml": "app:\n  name: demo\n"});
 		// Writes the hxml as `ceramic clay setup linux --debug` does.
