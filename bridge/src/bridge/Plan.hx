@@ -45,6 +45,7 @@ typedef LaunchConfig = {
 	var ?args:Array<String>;
 	var ?env:DynamicAccess<String>;
 	var ?port:Int;
+	var ?stopAllThreads:Bool;
 }
 
 /** What the extension has downloaded for the debuggers. **/
@@ -106,6 +107,17 @@ class LaunchError extends haxe.Exception {}
 **/
 class Planner {
 	public static function plan(config:LaunchConfig, settings:ProjectSettings, adapters:Adapters, workspaceRoot:String,
+			env:DynamicAccess<String>):Plan {
+		final plan = planTarget(config, settings, adapters, workspaceRoot, env);
+		if (plan.adapter.match(OwnHxcpp)) {
+			// With hxcpp, whether a thread's stop stops the others: the configuration says, else the project.
+			final launch:HxcppLaunch = plan.arguments;
+			launch.stopAllThreads = config.stopAllThreads ?? settings.debug?.stopAllThreads ?? true;
+		}
+		return plan;
+	}
+
+	static function planTarget(config:LaunchConfig, settings:ProjectSettings, adapters:Adapters, workspaceRoot:String,
 			env:DynamicAccess<String>):Plan {
 		if (config.request != null && config.request != "launch") {
 			throw new LaunchError('Haxe debugging supports only "request": "launch" so far.');

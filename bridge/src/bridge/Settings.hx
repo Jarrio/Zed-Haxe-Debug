@@ -25,4 +25,10 @@ typedef ProjectSettings = {
 
 	/** Extra toolchain resolvers, referenced by name from `haxeResolvers`. **/
 	var ?resolvers:Array<ResolverDefinition>;
+
+	/** The debugger's own settings, which a debug configuration's fields of the same names override. **/
+	var ?debug:{
+		/** hxcpp: whether a thread stopping stops the others too. Default: true. **/
+		var ?stopAllThreads:Bool;
+	};
 }

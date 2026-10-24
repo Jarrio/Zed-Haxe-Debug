@@ -81,6 +81,7 @@ see "Lime, OpenFL and Flixel" and "Ceramic". Or describe a session in `.zed/debu
 | `runtimeExecutable` | JavaScript: the Node to run the program with. Default: `node` on your PATH, else the one Zed runs. |
 | `webRoot`, `url`, `browser` | JavaScript: run the program in a browser instead of Node (see "JavaScript in a browser"). |
 | `stopOnEntry` | eval and JavaScript: pause before the first line runs. |
+| `stopAllThreads` | hxcpp: when a thread stops, stop the others too (see "Threads and timers"). Default: true. |
 | `haxePath` | Haxe executable to use. |
 | `mergeScopes`, `showGeneratedVariables` | eval-debugger's own options, as in VS Code. |
 
@@ -98,12 +99,13 @@ value, as an expression in the debug console's language:
 | | Locals | Fields and array items | Strings |
 |---|---|---|---|
 | eval | yes | yes | yes |
-| hxcpp | in the innermost frame | yes | yes |
+| hxcpp | yes | yes | yes |
 | HashLink | yes | yes | no |
 | JavaScript | yes | yes | yes |
 
 hxcpp changes a field or an item by running an assignment, such as `point.x = 40`, in the debug
-server's evaluator. HashLink can't make a new string in the program, so it can't change one. The list
+server's evaluator. A program built with its own older hxcpp-debug-server (`-lib hxcpp-debug-server`)
+changes locals only in the innermost frame. HashLink can't make a new string in the program, so it can't change one. The list
 shows the new value until the program moves on. When a debugger refuses a change, the debug console
 says why; Zed itself only writes it to its log.
 
@@ -115,10 +117,27 @@ error ends the session with the compiler's first lines.
 
 hxcpp-debug-server is a Haxe library compiled into the program, which connects back to the debugger
 when it starts. The extension downloads it from [a fork of vshaxe/hxcpp-debugger](https://github.com/Jarrio/hxcpp-debugger)
-with fixes that the haxelib release (1.2.4, from 2020) lacks: Haxe 4.0 and Haxe 5 support, errors
-instead of `null` for console expressions it can't evaluate, and a port chosen when the program starts,
-so that two sessions don't collide. A build that has `-lib hxcpp-debug-server` keeps its own copy, and
-the program then connects to port 6972, or to the one `-D HXCPP_DEBUG_PORT` sets.
+with much that the haxelib release (1.2.4, from 2020) lacks: Haxe 4.0 and Haxe 5 support, threads,
+hit counts and log points, changing locals in any frame, a console that sees what the frame's code
+sees, errors instead of `null` for expressions it can't evaluate, and a port chosen when the program
+starts, so that two sessions don't collide. A build that has `-lib hxcpp-debug-server` keeps its own
+copy, and the program then connects to port 6972, or to the one `-D HXCPP_DEBUG_PORT` sets.
+
+A debug build run without the debugger runs as usual. To have it wait for a debugger to attach on
+port 6972 instead, set `HXCPP_DEBUG_ATTACH=1` in its environment, or define `HXCPP_DEBUG_ATTACH`.
+
+Breakpoints take a condition, a hit count and a log message ("Edit Condition Breakpoint", "Set Hit
+Condition Breakpoint" and "Edit Log Breakpoint" in Zed). A hit count is a number of hits, after an
+optional operator: `5` stops from the fifth hit on, `==5` on the fifth only, `%5` on every fifth, and
+`>5`, `<5` and `<=5` as they read. A log message prints in the debug console instead of stopping, with
+each `{expression}` in it replaced by its value: `i is {i}, total {total}`.
+
+The debug console takes Haxe, run by an interpreter in the debug server against the stopped program.
+It sees what the frame's code sees: locals, `this`'s fields and methods by their names alone, the
+class's statics, the types the file imports (and its `import.hx` files), its own package's, and any type
+by its name alone when no other type has that name. `using` extensions (`name.startsWith("h")`),
+lambdas, array comprehensions, `switch`, `cast`, `map["b"]` and `'$name'` interpolation work. Completion
+lists those names, and after `value.` the value's fields.
 
 Tested with:
 
@@ -208,13 +227,27 @@ Breakpoints in timer callbacks (`haxe.Timer.delay`) work with every debugger. Br
 | | Breakpoints in a thread | Stepping in a thread |
 |---|---|---|
 | eval | yes, one thread at a time | yes |
-| hxcpp | no | no |
+| hxcpp | yes | yes |
 | HashLink | on Linux, end the program | no |
 | JavaScript | Haxe's JavaScript has no threads | |
 
 - eval: while one thread is stopped, another thread that reaches a breakpoint runs past it.
-- hxcpp starts each thread unable to stop, and hxcpp-debug-server only lets the main thread stop, so
-  other threads run past their breakpoints. Stepping always steps the main thread.
+- hxcpp: when a thread stops, the others stop too, so nothing changes while you look around. Another
+  thread reaching a breakpoint meanwhile shows on the next continue. While you step, the other threads
+  stay stopped, so a step over code that waits for another thread finishes only once you continue.
+
+  To stop only the thread that reached the breakpoint, and let continue and the steps move only that
+  thread, set `"stopAllThreads": false` in the debug configuration, or for the whole project in
+  Zed-Haxe's project settings (`.zed/settings.json`):
+
+  ```json
+  "lsp": {
+    "haxe-language-server": {
+      "settings": { "project": { "debug": { "stopAllThreads": false } } }
+    }
+  }
+  ```
+
 - HashLink: on Linux, the VM's debugger support traces only the program's main thread (`ptrace`), so
   a breakpoint that another thread reaches ends the program. Breakpoints outside threads work in a
   program that has them. Tested with HashLink 1.16 and the nightly of October 2026, and with
@@ -303,19 +336,12 @@ Tested with Ceramic's tools 2.1.0, `web` and `linux`. The Linux build needs the 
 - eval-debugger runs Haxe through a shell without quoting its arguments. The bridge runs it from the
   project folder so that the folder's path isn't one of them, but a space in an hxml argument still
   breaks.
-- hxcpp's console expressions are Haxe too, run by an interpreter in the debug server. It handles more
-  than eval: lambdas, array comprehensions, `switch`, and `map["b"]` work. These don't:
-  - static extensions through `using`, and `cast`
-  - functions that dead code elimination removed ("Null Function Pointer")
-  - string interpolation (`'$name'` comes back as the text `$name`)
-  - classes by their short name: `flixel.FlxG.width` works, `FlxG.width` doesn't
-
-  A field that doesn't exist reads as `null`.
-- hxcpp can change local variables only in the innermost frame.
+- hxcpp's console can't call functions that dead code elimination removed ("Null Function Pointer"),
+  and a field that doesn't exist reads as `null`.
+- Haxe unrolls a loop over a small constant range, such as `for (i in 0...10)`, even in a debug build,
+  so hxcpp has no `i` to show inside it.
 - The Haxe 5 nightly of October 2026 can't build any program that uses `sys.thread.Thread.current()`
   against hxcpp master of the same month, and the debug server uses it.
-- A debug build with hxcpp-debug-server doesn't exit when it runs without the debugger: the server
-  waits for one to attach.
 - HashLink reports a finished step as a stop at a breakpoint.
 
 ## How it works

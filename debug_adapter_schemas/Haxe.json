@@ -80,6 +80,11 @@
       "description": "eval and JavaScript: pause before the first line runs.",
       "default": false
     },
+    "stopAllThreads": {
+      "type": "boolean",
+      "description": "hxcpp: when a thread stops, stop the other threads too. Without it, only the thread that stopped does, and continue and the steps let only it go. Default: Zed-Haxe's project setting debug.stopAllThreads, else true.",
+      "default": true
+    },
     "haxePath": {
       "type": "string",
       "description": "Haxe executable to use. Default: the one the Haxe language server would pick (.haxerc with lix or haxe-manager, else PATH)."

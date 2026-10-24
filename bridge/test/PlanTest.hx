@@ -309,6 +309,15 @@ class PlanTest extends utest.Test {
 		Assert.same(["run"], launch.args);
 	}
 
+	function testHxcppStopsEveryThreadUnlessToldOtherwise() {
+		final dir = Fixture.create({"build.hxml": "-main Main\n--cpp bin"});
+		final launch = (config, ?settings) -> (plan(dir, config, settings).arguments : HxcppLaunch).stopAllThreads;
+		Assert.isTrue(launch({request: "launch"}));
+		// The project's setting, unless the configuration says.
+		Assert.isFalse(launch({request: "launch"}, {debug: {stopAllThreads: false}}));
+		Assert.isTrue(launch({request: "launch", stopAllThreads: true}, {debug: {stopAllThreads: false}}));
+	}
+
 	function testHxcppNeedsTheDebugServer() {
 		final dir = Fixture.create({"build.hxml": "-main Main\n--cpp bin"});
 		final haxe = Fixture.script(dir, "haxe4/haxe", "console.log('4.3.7')");

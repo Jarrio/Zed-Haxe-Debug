@@ -116,6 +116,15 @@ function check(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+/** Waits until `condition()` holds, checking every tenth of a second. **/
+async function eventually(condition, what, ms = 60000) {
+  for (let waited = 0; waited < ms; waited += 100) {
+    if (condition()) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`timed out waiting for ${what}`);
+}
+
 /** The line holding `// BREAK <name>`, 1-based. **/
 function breakLine(file, name) {
   const index = fs.readFileSync(file, "utf8").split("\n").findIndex((line) => line.includes(`// BREAK ${name}`));
@@ -366,6 +375,175 @@ const tests = {
     check(variables.sum === "5", `sum is ${variables.sum}`);
     await session.client.request("disconnect", {});
     await session.client.close();
+  },
+
+  // A breakpoint in a worker thread stops it and, by default, every other thread. The other worker,
+  // reaching the breakpoint meanwhile, waits its turn and shows on continue.
+  async hxcppThreads(env) {
+    const session = await start(env, "threads", { request: "launch" });
+    const { client } = session;
+    const file = path.join(session.dir, "src", "Main.hx");
+    const line = breakLine(file, "thread");
+    const { threadId, frame, stopped } = await runToBreakpoint(session, file, line);
+    check(threadId !== 0 && frame.line === line, `stopped on thread ${threadId} at line ${frame.line}`);
+    check(stopped.body.allThreadsStopped === true, "the other threads weren't stopped");
+    // A step steps the stopped thread, not the main one.
+    const stepped = client.nextEvent("stopped");
+    await client.request("next", { threadId });
+    const step = await stepped;
+    const top = (await client.request("stackTrace", { threadId })).body.stackFrames[0];
+    check(step.body.threadId === threadId && top.line === line + 1, `the step stopped thread ${step.body.threadId} at line ${top.line}`);
+    const next = client.nextEvent("stopped");
+    await client.request("continue", { threadId });
+    const other = (await next).body;
+    check(other.threadId !== threadId && other.reason === "breakpoint", `the next stop was ${JSON.stringify(other)}`);
+    const otherTop = (await client.request("stackTrace", { threadId: other.threadId })).body.stackFrames[0];
+    check(otherTop.line === line, `the other worker stopped at line ${otherTop.line}`);
+    await client.request("continue", { threadId: other.threadId });
+    await client.event("terminated");
+    const output = client.output();
+    check(["thread 1 2", "thread 2 4", "timer fired"].every((text) => output.includes(text)), `the output was ${output}`);
+    await client.request("disconnect", {});
+    await client.close();
+  },
+
+  // With "stopAllThreads": false, each thread stops by itself and goes on by itself.
+  async hxcppThreadsAlone(env) {
+    const session = await start(env, "threads", { request: "launch", stopAllThreads: false });
+    const { client } = session;
+    const file = path.join(session.dir, "src", "Main.hx");
+    const { threadId, stopped } = await runToBreakpoint(session, file, breakLine(file, "thread"));
+    check(stopped.body.allThreadsStopped === false, "the other threads were stopped too");
+    const stops = () => client.events.filter((event) => event.event === "stopped");
+    // The other worker reaches the breakpoint while the first waits.
+    await eventually(() => stops().length === 2, "the other worker's stop");
+    const other = stops()[1].body;
+    check(other.threadId !== threadId && other.allThreadsStopped === false, `the other stop was ${JSON.stringify(other)}`);
+    await client.request("continue", { threadId });
+    await client.request("continue", { threadId: other.threadId });
+    await client.event("terminated");
+    const output = client.output();
+    check(output.includes("thread 1 2") && output.includes("thread 2 4"), `the output was ${output}`);
+    await client.request("disconnect", {});
+    await client.close();
+  },
+
+  // A log point prints instead of stopping, a hit count stops on that hit, a local of an outer frame
+  // changes, and a new value can be an expression.
+  async hxcppBreakpoints(env) {
+    const session = await start(env, "breakpoints", { request: "launch" });
+    const { client, config } = session;
+    const file = path.join(session.dir, "src", "Main.hx");
+    const launched = client.request("launch", config, buildTime);
+    await client.event("initialized");
+    const breakpoints = [
+      { line: breakLine(file, "log"), logMessage: "i={i} total={total}" },
+      { line: breakLine(file, "hits"), hitCondition: "==3" },
+      { line: breakLine(file, "inner") },
+    ];
+    const set = await client.request("setBreakpoints", { source: { path: file }, breakpoints }, buildTime);
+    check(set.success && set.body.breakpoints.every((b) => b.verified), `breakpoints: ${JSON.stringify(set.body ?? set.message)}`);
+    await client.request("configurationDone", {});
+    const launch = await launched;
+    check(launch.success, `launch failed: ${launch.message}`);
+    const first = (await client.event("stopped")).body;
+    let frames = (await client.request("stackTrace", { threadId: first.threadId })).body.stackFrames;
+    check(frames[0].line === breakLine(file, "hits"), `stopped at line ${frames[0].line}, not the hit count's`);
+    const i = await client.request("evaluate", { expression: "i", frameId: frames[0].id, context: "repl" });
+    check(i.body?.result === "2", `the third hit has i = ${JSON.stringify(i.body ?? i.message)}`);
+    check(client.output().includes("i=2 total=1") && !client.output().includes("i=3"), `the log so far: ${client.output()}`);
+    const next = client.nextEvent("stopped");
+    await client.request("continue", { threadId: first.threadId });
+    const second = (await next).body;
+    frames = (await client.request("stackTrace", { threadId: second.threadId })).body.stackFrames;
+    check(frames[0].line === breakLine(file, "inner") && frames[1].name === "Main.main", `stopped at ${JSON.stringify(frames.slice(0, 2))}`);
+    check(client.output().includes("i=9 total=36"), `the log: ${client.output()}`);
+    const locals = async (frame) => (await client.request("scopes", { frameId: frame.id })).body.scopes.find((scope) => scope.name === "Locals").variablesReference;
+    const list = async (reference) => Object.fromEntries((await client.request("variables", { variablesReference: reference })).body.variables.map((v) => [v.name, v.value]));
+    // The caller's local, to an expression evaluated there.
+    const caller = await locals(frames[1]);
+    const changed = await client.request("setVariable", { variablesReference: caller, name: "total", value: "total * 2" });
+    check(changed.success && changed.body.value === "90", `setting total gave ${JSON.stringify(changed.body ?? changed.message)}`);
+    check((await list(caller)).total === "90", "the caller's total doesn't show its new value");
+    const own = await locals(frames[0]);
+    const scaled = await client.request("setVariable", { variablesReference: own, name: "scale", value: "10" });
+    check(scaled.success, `setting scale failed: ${scaled.message}`);
+    await client.request("continue", { threadId: second.threadId });
+    await client.event("terminated");
+    const output = client.output();
+    check(output.includes("local 450") && output.includes("total 90"), `the output was ${output}`);
+    await client.request("disconnect", {});
+    await client.close();
+  },
+
+  // Pausing a running program stops every thread, the busy one and the one in Sys.sleep.
+  async hxcppPause(env) {
+    const session = await start(env, "busy", { request: "launch" });
+    const { client, config } = session;
+    const launched = client.request("launch", config, buildTime);
+    await client.event("initialized");
+    await client.request("configurationDone", {});
+    const launch = await launched;
+    check(launch.success, `launch failed: ${launch.message}`);
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    const paused = client.nextEvent("stopped");
+    await client.request("pause", { threadId: 0 });
+    const stop = (await paused).body;
+    check(stop.reason === "pause" && stop.allThreadsStopped === true, `the pause stopped ${JSON.stringify(stop)}`);
+    const threads = (await client.request("threads", {})).body.threads;
+    check(threads.length === 2, `threads: ${JSON.stringify(threads)}`);
+    for (const thread of threads) {
+      const frames = (await client.request("stackTrace", { threadId: thread.id })).body.stackFrames;
+      check(frames.length > 0 && frames[0].name === "Main.main", `thread ${thread.id} is at ${JSON.stringify(frames[0])}`);
+    }
+    await client.request("continue", { threadId: stop.threadId });
+    await client.request("disconnect", {});
+    await client.close();
+  },
+
+  // The console sees what the frame's code sees: its usings and imports, types by their name alone,
+  // the class's statics and this's fields; and takes Haxe's interpolation and cast.
+  async hxcppConsole(env) {
+    const session = await start(env, "console", { request: "launch" });
+    const { client } = session;
+    const file = path.join(session.dir, "src", "Main.hx");
+    const launched = client.request("launch", session.config, buildTime);
+    await client.event("initialized");
+    await client.request("setBreakpoints", { source: { path: file }, breakpoints: [{ line: breakLine(file, "main") }, { line: breakLine(file, "member") }] }, buildTime);
+    await client.request("configurationDone", {});
+    check((await launched).success, "launch failed");
+    const evaluate = async (expression, frameId) => {
+      const result = await client.request("evaluate", { expression, frameId, context: "repl" });
+      return result.success ? result.body.result : `error: ${result.message}`;
+    };
+    let stopped = (await client.event("stopped")).body;
+    let frame = (await client.request("stackTrace", { threadId: stopped.threadId })).body.stackFrames[0];
+    const expected = {
+      'name.startsWith("he")': "true",
+      "'$name has ${name.length}'": '"hello has 5"',
+      "cast(point, Point).x": "4",
+      "Geometry.area(3, 4)": "12",
+      "Colors.red": "16711680",
+      count: "7",
+    };
+    for (const [expression, value] of Object.entries(expected)) {
+      const result = await evaluate(expression, frame.id);
+      check(result === value, `${expression} gave ${result}, not ${value}`);
+    }
+    check((await evaluate("cast(name, Int)", frame.id)).startsWith("error"), "cast(name, Int) didn't fail");
+    const complete = async (text) => (await client.request("completions", { frameId: frame.id, text, column: text.length })).body.targets.map((t) => t.label);
+    check((await complete("na")).includes("name"), "no name among the completions");
+    check((await complete("point.")).includes("x"), "no x among point's completions");
+    const next = client.nextEvent("stopped");
+    await client.request("continue", { threadId: stopped.threadId });
+    stopped = (await next).body;
+    frame = (await client.request("stackTrace", { threadId: stopped.threadId })).body.stackFrames[0];
+    check((await evaluate("x", frame.id)) === "4", "this.x isn't reachable as x");
+    check((await evaluate("describe()", frame.id)) === '"point at 4"', "this.describe() isn't reachable as describe()");
+    await client.request("continue", { threadId: stopped.threadId });
+    await client.event("terminated");
+    await client.request("disconnect", {});
+    await client.close();
   },
 
   async hxcppBuildError(env) {

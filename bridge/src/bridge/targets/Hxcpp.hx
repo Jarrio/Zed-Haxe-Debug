@@ -34,6 +34,9 @@ typedef HxcppLaunch = {
 		looked up on PATH, and has as long as it runs for the program to connect.
 	**/
 	final ?launcher:Bool;
+
+	/** Whether a thread's stop stops the others too (the default). Needs the debug server the extension brings. **/
+	var ?stopAllThreads:Bool;
 }
 
 /**

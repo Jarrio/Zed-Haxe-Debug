@@ -478,6 +478,22 @@ class bridge_LaunchError extends haxe_Exception {
 bridge_LaunchError.__name__ = true;
 class bridge_Planner {
 	static plan(config,settings,adapters,workspaceRoot,env) {
+		let plan = bridge_Planner.planTarget(config,settings,adapters,workspaceRoot,env);
+		if(plan.adapter._hx_index == 1) {
+			let launch = plan.arguments;
+			let tmp = config.stopAllThreads;
+			let tmp1;
+			if(tmp != null) {
+				tmp1 = tmp;
+			} else {
+				let tmp = settings.debug;
+				tmp1 = tmp != null ? tmp.stopAllThreads : null;
+			}
+			launch.stopAllThreads = tmp1 != null ? tmp1 : true;
+		}
+		return plan;
+	}
+	static planTarget(config,settings,adapters,workspaceRoot,env) {
 		if(config.request != null && config.request != "launch") {
 			throw new bridge_LaunchError("Haxe debugging supports only \"request\": \"launch\" so far.");
 		}
@@ -1864,8 +1880,15 @@ bridge_targets_Hxcpp.__name__ = true;
 class bridge_targets_HxcppAdapter {
 	constructor() {
 		this.values = new haxe_ds_IntMap();
+		this.innermost = new haxe_ds_IntMap();
+		this.nextFrame = 1;
+		this.frames = new haxe_ds_IntMap();
 		this.pauseReason = "pause";
-		this.stopped = false;
+		this.allStopped = false;
+		this.stoppedThreads = new haxe_ds_IntMap();
+		this.stopAll = true;
+		this.ready = false;
+		this.features = [];
 		this.threads = new haxe_ds_IntMap();
 		this.running = false;
 		this.configured = false;
@@ -1893,16 +1916,18 @@ class bridge_targets_HxcppAdapter {
 		} else {
 			switch(_g) {
 			case "completions":
-				if(!this.stopped) {
+				let frame = this.frameOf(args.frameId);
+				if(frame == null || !this.isStopped(frame.thread)) {
 					this.respond(message,{ targets : []});
 				} else {
-					this.forward(message,"completions",{ frameId : args.frameId, text : args.text, column : args.column},function(result) {
+					this.forward(message,"completions",{ threadId : frame.thread, frameId : frame.frame, text : args.text, column : args.column},function(result) {
 						let _g = [];
 						let _g1 = 0;
 						while(_g1 < result.length) {
 							let item = result[_g1];
 							++_g1;
-							_g.push({ label : item.label, type : "variable"});
+							let tmp = item.type;
+							_g.push({ label : item.label, type : tmp != null ? tmp : "variable"});
 						}
 						return { targets : _g};
 					});
@@ -1914,8 +1939,13 @@ class bridge_targets_HxcppAdapter {
 				this.run();
 				break;
 			case "continue":
-				this.resumed();
-				this.respond(message,{ allThreadsContinued : true});
+				let everything = this.stopAll || this.allStopped;
+				if(everything) {
+					this.resumed();
+				} else {
+					this.resumedThread(args.threadId);
+				}
+				this.respond(message,{ allThreadsContinued : everything});
 				this.tell("continue",{ threadId : args.threadId});
 				break;
 			case "disconnect":
@@ -1924,16 +1954,14 @@ class bridge_targets_HxcppAdapter {
 				this.onClose(0);
 				break;
 			case "evaluate":
-				if(!this.stopped) {
+				let frame1 = this.frameOf(args.frameId);
+				if(frame1 == null || !this.isStopped(frame1.thread)) {
 					this.respond(message,null,"The program is running. Pause it to evaluate expressions.");
 				} else {
-					let frameId;
-					let tmp = args.frameId;
-					frameId = tmp != null ? tmp : this.topFrame;
-					this.forward(message,"evaluate",{ expr : args.expression, frameId : frameId},function(info) {
+					this.forward(message,"evaluate",{ threadId : frame1.thread, frameId : frame1.frame, expr : args.expression},function(info) {
 						if(info.variablesReference != null && info.variablesReference > 0) {
 							let path = new EReg("^[A-Za-z_][\\w.]*$","").match(args.expression) ? args.expression : "(" + Std.string(args.expression) + ")";
-							_gthis.values.h[info.variablesReference] = { frame : frameId, expression : path};
+							_gthis.values.h[info.variablesReference] = { thread : frame1.thread, frame : frame1.frame, expression : path, innermost : false};
 						}
 						let body = bridge_targets_HxcppAdapter.variable(info);
 						body.result = body.value;
@@ -1944,7 +1972,7 @@ class bridge_targets_HxcppAdapter {
 				}
 				break;
 			case "initialize":
-				this.respond(message,{ supportsConfigurationDoneRequest : true, supportsConditionalBreakpoints : true, supportsCompletionsRequest : true, supportsSetVariable : true, supportsTerminateRequest : true});
+				this.respond(message,{ supportsConfigurationDoneRequest : true, supportsConditionalBreakpoints : true, supportsHitConditionalBreakpoints : true, supportsLogPoints : true, supportsCompletionsRequest : true, supportsSetVariable : true, supportsTerminateRequest : true});
 				this.event("initialized");
 				break;
 			case "launch":
@@ -1956,31 +1984,33 @@ class bridge_targets_HxcppAdapter {
 				this.tell("pause",{ });
 				break;
 			case "scopes":
-				let frameId = args.frameId;
-				this.forward(message,"getScopes",{ frameId : frameId},function(result) {
-					let _g = 0;
-					while(_g < result.length) {
-						let scope = result[_g];
-						++_g;
-						if(frameId == _gthis.topFrame && scope.name == "Locals") {
-							_gthis.topLocals = scope.id;
+				let frame2 = this.frames.h[args.frameId];
+				if(frame2 == null) {
+					this.respond(message,null,"The program has moved on from that frame.");
+				} else {
+					let top = this.innermost.h[frame2.thread] == args.frameId;
+					this.forward(message,"getScopes",{ threadId : frame2.thread, frameId : frame2.frame},function(result) {
+						let _g = 0;
+						while(_g < result.length) {
+							let scope = result[_g];
+							++_g;
+							if(scope.name == "Locals" || scope.name == "Members") {
+								_gthis.values.h[scope.id] = { thread : frame2.thread, frame : frame2.frame, expression : scope.name == "Members" ? "this" : null, innermost : top};
+							}
 						}
-						if(scope.name == "Locals" || scope.name == "Members") {
-							_gthis.values.h[scope.id] = { frame : frameId, expression : scope.name == "Members" ? "this" : null};
+						let _g1 = [];
+						let _g2 = 0;
+						while(_g2 < result.length) {
+							let scope = result[_g2];
+							++_g2;
+							_g1.push({ name : scope.name, variablesReference : scope.id, expensive : false});
 						}
-					}
-					let _g1 = [];
-					let _g2 = 0;
-					while(_g2 < result.length) {
-						let scope = result[_g2];
-						++_g2;
-						_g1.push({ name : scope.name, variablesReference : scope.id, expensive : false});
-					}
-					return { scopes : _g1};
-				});
+						return { scopes : _g1};
+					});
+				}
 				break;
 			case "setBreakpoints":
-				if(this.server == null) {
+				if(!this.ready) {
 					this.early.push(message);
 				} else {
 					this.setBreakpoints(message);
@@ -1992,48 +2022,56 @@ class bridge_targets_HxcppAdapter {
 			case "setVariable":
 				let target = this.values.h[args.variablesReference];
 				let assigned = (target != null ? target.expression : null) == null ? null : bridge_targets_HxcppAdapter.member(target.expression,args.name);
-				if(args.variablesReference == this.topLocals) {
-					this.forward(message,"setVariable",{ expr : args.name, value : args.value},function(result) {
-						return { value : Std.string(result.value)};
-					});
+				let changed = function(info) {
+					let body = bridge_targets_HxcppAdapter.variable(info);
+					Reflect.deleteField(body,"name");
+					return body;
+				};
+				if(target == null) {
+					this.respond(message,null,"hxcpp can't change " + Std.string(args.name) + " from the variables list. An assignment in the debug console may work.");
+				} else if(target.expression == null && this.features.includes("frames")) {
+					this.forward(message,"setVariable",{ threadId : target.thread, frameId : target.frame, expr : args.name, value : args.value},changed);
+				} else if(target.expression == null && target.innermost) {
+					this.forward(message,"setVariable",{ expr : args.name, value : args.value},changed);
+				} else if(target.expression == null) {
+					this.respond(message,null,"This program's hxcpp-debug-server can only change the local variables of the innermost frame.");
 				} else if(assigned != null) {
-					this.forward(message,"evaluate",{ expr : "" + assigned + " = " + Std.string(args.value), frameId : target.frame},function(info) {
-						let body = bridge_targets_HxcppAdapter.variable(info);
-						Reflect.deleteField(body,"name");
-						return body;
-					});
-				} else if(target != null && target.expression == null) {
-					this.respond(message,null,"hxcpp can only change the local variables of the innermost frame.");
+					this.forward(message,"evaluate",{ threadId : target.thread, frameId : target.frame, expr : "" + assigned + " = " + Std.string(args.value)},changed);
 				} else {
 					this.respond(message,null,"hxcpp can't change " + Std.string(args.name) + " from the variables list. An assignment in the debug console may work.");
 				}
 				break;
 			case "stackTrace":
-				this.forward(message,"stackTrace",{ threadId : args.threadId},function(result) {
+				let threadId = args.threadId;
+				this.forward(message,"stackTrace",{ threadId : threadId},function(result) {
 					let first = 0;
 					while(first < result.length && bridge_targets_HxcppAdapter.isDebuggerFrame(result[first])) ++first;
 					let _g = [];
 					let _g1 = 0;
 					let _g2 = result.slice(first);
 					while(_g1 < _g2.length) {
-						let frame = _g2[_g1];
+						let info = _g2[_g1];
 						++_g1;
-						_g.push(bridge_targets_HxcppAdapter.stackFrame(frame));
+						let id = _gthis.nextFrame++;
+						_gthis.frames.h[id] = { thread : threadId, frame : info.id};
+						_g.push(bridge_targets_HxcppAdapter.stackFrame(info,id));
 					}
-					let frames = _g;
-					_gthis.topFrame = frames.length > 0 ? frames[0].id : null;
+					let shown = _g;
+					if(shown.length > 0) {
+						_gthis.innermost.h[threadId] = shown[0].id;
+					}
 					let tmp = args.startFrame;
 					let start = tmp != null ? tmp : 0;
 					let tmp1 = args.levels;
 					let levels = tmp1 != null ? tmp1 : 0;
-					return { stackFrames : frames.slice(start,levels > 0 ? start + levels : frames.length), totalFrames : frames.length};
+					return { stackFrames : shown.slice(start,levels > 0 ? start + levels : shown.length), totalFrames : shown.length};
 				});
 				break;
 			case "next":case "stepIn":case "stepOut":
 				this.pauseReason = "step";
-				this.resumed();
+				this.resumedThread(args.threadId);
 				this.respond(message);
-				this.tell(message.command,{ });
+				this.tell(message.command,{ threadId : args.threadId});
 				break;
 			case "terminate":
 				this.respond(message);
@@ -2076,7 +2114,7 @@ class bridge_targets_HxcppAdapter {
 							++_g;
 							let expression = bridge_targets_HxcppAdapter.member(parent.expression,info.name);
 							if(info.variablesReference != null && info.variablesReference > 0 && expression != null) {
-								_gthis.values.h[info.variablesReference] = { frame : parent.frame, expression : expression};
+								_gthis.values.h[info.variablesReference] = { thread : parent.thread, frame : parent.frame, expression : expression, innermost : false};
 							}
 						}
 					}
@@ -2121,6 +2159,8 @@ class bridge_targets_HxcppAdapter {
 		});
 		built.then(function(_) {
 			return _gthis.start(launch);
+		}).then(function(_) {
+			return _gthis.configure(launch);
 		}).then(function(_) {
 			_gthis.respond(request);
 			let _g = 0;
@@ -2247,6 +2287,21 @@ class bridge_targets_HxcppAdapter {
 			});
 		});
 	}
+	configure(launch) {
+		let tmp = launch.stopAllThreads;
+		this.stopAll = tmp != null ? tmp : true;
+		let _gthis = this;
+		let done = function(result) {
+			let reported = result != null ? result.features : null;
+			let tmp = reported;
+			_gthis.features = tmp != null ? tmp : [];
+			_gthis.ready = true;
+			return null;
+		};
+		return this.server.request("configure",{ stopAllThreads : this.stopAll}).then(done,function(_) {
+			return done(null);
+		});
+	}
 	run() {
 		let server = this.server;
 		if(server == null || !this.configured || this.running) {
@@ -2260,6 +2315,7 @@ class bridge_targets_HxcppAdapter {
 		let requested;
 		let tmp = args.breakpoints;
 		requested = tmp != null ? tmp : [];
+		let extras = this.features.includes("logPoints");
 		let _g = [];
 		let _g1 = 0;
 		while(_g1 < requested.length) {
@@ -2268,6 +2324,12 @@ class bridge_targets_HxcppAdapter {
 			let params = { line : breakpoint.line};
 			if(breakpoint.condition != null) {
 				params.condition = breakpoint.condition;
+			}
+			if(extras && breakpoint.hitCondition != null) {
+				params.hitCondition = breakpoint.hitCondition;
+			}
+			if(extras && breakpoint.logMessage != null) {
+				params.logMessage = breakpoint.logMessage;
 			}
 			_g.push(params);
 		}
@@ -2279,7 +2341,7 @@ class bridge_targets_HxcppAdapter {
 			let _g2 = requested.length;
 			while(_g1 < _g2) {
 				let i = _g1++;
-				_g.push(bridge_targets_HxcppAdapter.breakpoint(requested[i],ids == null ? null : ids[i]));
+				_g.push(bridge_targets_HxcppAdapter.breakpoint(requested[i],ids == null ? null : ids[i],extras));
 			}
 			return { breakpoints : _g};
 		});
@@ -2296,13 +2358,16 @@ class bridge_targets_HxcppAdapter {
 			}
 			break;
 		case "breakpointStop":
-			this.stop("breakpoint",params.threadId);
+			this.stop("breakpoint",params);
 			break;
 		case "exceptionStop":
-			this.stop("exception",0,params.text);
+			this.stop("exception",params);
+			break;
+		case "output":
+			this.output("console",params.text);
 			break;
 		case "pauseStop":
-			this.stop(this.pauseReason,params.threadId);
+			this.stop(this.pauseReason,params);
 			break;
 		case "threadStart":
 			let id1 = params.threadId;
@@ -2316,21 +2381,98 @@ class bridge_targets_HxcppAdapter {
 			bridge_Log.info("unknown notification from the debug server: " + other);
 		}
 	}
-	stop(reason,threadId,text) {
-		this.stopped = true;
+	stop(reason,params) {
+		let tmp = params.threadId;
+		let threadId = tmp != null ? tmp : 0;
+		let tmp1 = params.allThreadsStopped;
+		let all = tmp1 != null ? tmp1 : true;
+		this.stoppedThreads.h[threadId] = true;
+		if(all) {
+			this.allStopped = true;
+		}
+		this.lastStopped = threadId;
 		this.pauseReason = "pause";
-		let body = { reason : reason, threadId : threadId, allThreadsStopped : true};
-		if(text != null) {
-			body.text = text;
-			body.description = text;
+		let body = { reason : reason, threadId : threadId, allThreadsStopped : all};
+		if(params.text != null) {
+			body.text = params.text;
+			body.description = params.text;
 		}
 		this.event("stopped",body);
 	}
+	isStopped(thread) {
+		if(!this.allStopped) {
+			return this.stoppedThreads.h.hasOwnProperty(thread);
+		} else {
+			return true;
+		}
+	}
+	frameOf(frameId) {
+		if(frameId != null) {
+			return this.frames.h[frameId];
+		}
+		if(this.lastStopped == null) {
+			return null;
+		} else {
+			return { thread : this.lastStopped, frame : null};
+		}
+	}
 	resumed() {
-		this.stopped = false;
-		this.topFrame = null;
-		this.topLocals = null;
+		this.stoppedThreads.h = { };
+		this.allStopped = false;
+		this.lastStopped = null;
+		this.frames.h = { };
+		this.innermost.h = { };
 		this.values.h = { };
+	}
+	resumedThread(thread) {
+		this.stoppedThreads.remove(thread);
+		this.allStopped = false;
+		if(this.lastStopped == thread) {
+			this.lastStopped = null;
+		}
+		let _g = 0;
+		let _g1 = [];
+		let map = this.frames;
+		let _g_map = map;
+		let _g_keys = map.keys();
+		while(_g_keys.hasNext()) {
+			let key = _g_keys.next();
+			let _g_value = _g_map.get(key);
+			let _g_key = key;
+			let id = _g_key;
+			let frame = _g_value;
+			if(frame.thread == thread) {
+				_g1.push(id);
+			}
+		}
+		let _g2 = _g1;
+		while(_g < _g2.length) {
+			let id = _g2[_g];
+			++_g;
+			this.frames.remove(id);
+		}
+		this.innermost.remove(thread);
+		let _g3 = 0;
+		let _g4 = [];
+		let map1 = this.values;
+		let _g_map1 = map1;
+		let _g_keys1 = map1.keys();
+		while(_g_keys1.hasNext()) {
+			let key = _g_keys1.next();
+			let _g_value = _g_map1.get(key);
+			let _g_key = key;
+			let reference = _g_key;
+			let value = _g_value;
+			if(value.thread == thread) {
+				_g4.push(reference);
+			}
+		}
+		let _g5 = _g4;
+		while(_g3 < _g5.length) {
+			let reference = _g5[_g3];
+			++_g3;
+			this.values.remove(reference);
+		}
 	}
 	finish() {
 		if(!this.terminated) {
@@ -2385,11 +2527,16 @@ class bridge_targets_HxcppAdapter {
 	output(category,text) {
 		this.event("output",{ category : category, output : text});
 	}
-	static breakpoint(requested,id) {
+	static breakpoint(requested,id,extras) {
+		let special = requested.hitCondition != null || requested.logMessage != null;
 		if(id != null && id >= 0) {
-			return { verified : true, id : id, line : requested.line};
+			let result = { verified : true, id : id, line : requested.line};
+			if(special && !extras) {
+				result.message = "This program's hxcpp-debug-server ignores hit counts and log messages: it stops here every time.";
+			}
+			return result;
 		}
-		return { verified : false, line : requested.line, message : requested.condition != null ? "The condition doesn't parse, or no code from this file is loaded." : "No code from this file is loaded."};
+		return { verified : false, line : requested.line, message : requested.condition != null || special ? "The condition, hit count or log message doesn't parse, or no code from this file is loaded." : "No code from this file is loaded."};
 	}
 	static isDebuggerFrame(info) {
 		let tmp = info.name;
@@ -2400,8 +2547,8 @@ class bridge_targets_HxcppAdapter {
 			return true;
 		}
 	}
-	static stackFrame(info) {
-		let frame = { id : info.id, name : info.name, line : info.line, column : 1};
+	static stackFrame(info,id) {
+		let frame = { id : id, name : info.name, line : info.line, column : 1};
 		if(info.source != null && haxe_io_Path.withoutDirectory(info.source) != "?") {
 			frame.source = { name : haxe_io_Path.withoutDirectory(info.source), path : info.source};
 		} else {

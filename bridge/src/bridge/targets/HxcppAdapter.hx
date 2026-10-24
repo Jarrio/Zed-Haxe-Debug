@@ -44,22 +44,44 @@ class HxcppAdapter implements Adapter {
 	/** Threads Zed has been told about. The server reports a thread as started each time it resumes. **/
 	final threads:Map<Int, Bool> = [];
 
-	var stopped = false;
+	/** What the debug server said it can do (`configure`). The library's older releases say nothing. **/
+	var features:Array<String> = [];
+
+	/** The server has been configured, so breakpoints can go to it. **/
+	var ready = false;
+
+	/** Whether a thread's stop stops the others too. **/
+	var stopAll = true;
+
+	/** Stopped threads Zed has been told about; `allStopped` while every thread is. **/
+	final stoppedThreads:Map<Int, Bool> = [];
+
+	var allStopped = false;
+
+	/** The thread of the latest stop, which requests without a frame are about. **/
+	var lastStopped:Null<Int>;
 
 	/** What the next `pauseStop` means: a step finished, unless a pause was asked for. **/
 	var pauseReason = "pause";
 
-	/** The innermost frame of the current stop and its locals: the only locals the server can change. **/
-	var topFrame:Null<Int>;
+	/**
+		The frames Zed has been shown, by the id Zed knows them by. The server numbers each thread's frames
+		from 0, so the bridge gives them ids of its own.
+	**/
+	final frames:Map<Int, {thread:Int, frame:Int}> = [];
 
-	var topLocals:Null<Int>;
+	var nextFrame = 1;
+
+	/** Each stopped thread's innermost frame, by Zed's id. **/
+	final innermost:Map<Int, Int> = [];
 
 	/**
-		Where the values Zed has been shown since the program stopped come from, by variables reference:
-		the frame, and the expression that reads the value (`point`, `point.x`, `list[0]`), which a frame's
-		locals don't have. Fields and items change through an assignment the server's evaluator runs.
+		Where the values Zed has been shown come from, by variables reference: the thread and frame (null
+		for the innermost), and the expression that reads the value (`point`, `point.x`, `list[0]`), which
+		a frame's locals don't have. Fields and items change through an assignment the server's evaluator
+		runs. The library's older releases change locals only in the innermost frame.
 	**/
-	final values:Map<Int, {frame:Int, expression:Null<String>}> = [];
+	final values:Map<Int, {thread:Int, frame:Null<Int>, expression:Null<String>, innermost:Bool}> = [];
 
 	public function new() {}
 
@@ -73,6 +95,8 @@ class HxcppAdapter implements Adapter {
 				respond(message, {
 					supportsConfigurationDoneRequest: true,
 					supportsConditionalBreakpoints: true,
+					supportsHitConditionalBreakpoints: true,
+					supportsLogPoints: true,
 					supportsCompletionsRequest: true,
 					supportsSetVariable: true,
 					supportsTerminateRequest: true
@@ -81,7 +105,7 @@ class HxcppAdapter implements Adapter {
 			case "launch":
 				launch(message, message.arguments);
 			case "setBreakpoints":
-				if (server == null) {
+				if (!ready) {
 					early.push(message);
 				} else {
 					setBreakpoints(message);
@@ -101,32 +125,48 @@ class HxcppAdapter implements Adapter {
 					});
 				}
 			case "stackTrace":
-				forward(message, "stackTrace", {threadId: args.threadId}, function(result:Array<Dynamic>) {
-					// The server leaves out its own frames by their file name, which a build with full paths in
-					// its positions (`-D absolute-path`, as Ceramic's) doesn't match.
+				final threadId:Int = args.threadId;
+				forward(message, "stackTrace", {threadId: threadId}, function(result:Array<Dynamic>) {
+					// The library's older releases leave out their own frames by file name, which a build with
+					// full paths in its positions (`-D absolute-path`, as Ceramic's) doesn't match.
 					var first = 0;
 					while (first < result.length && isDebuggerFrame(result[first])) {
 						first++;
 					}
-					final frames = [for (frame in result.slice(first)) stackFrame(frame)];
-					topFrame = frames.length > 0 ? frames[0].id : null;
+					final shown = [
+						for (info in result.slice(first)) {
+							final id = nextFrame++;
+							frames.set(id, {thread: threadId, frame: info.id});
+							stackFrame(info, id);
+						}
+					];
+					if (shown.length > 0) {
+						innermost.set(threadId, shown[0].id);
+					}
 					final start:Int = args.startFrame ?? 0;
 					final levels:Int = args.levels ?? 0;
-					return {stackFrames: frames.slice(start, levels > 0 ? start + levels : frames.length), totalFrames: frames.length};
+					return {stackFrames: shown.slice(start, levels > 0 ? start + levels : shown.length), totalFrames: shown.length};
 				});
 			case "scopes":
-				final frameId:Int = args.frameId;
-				forward(message, "getScopes", {frameId: frameId}, function(result:Array<Dynamic>) {
-					for (scope in result) {
-						if (frameId == topFrame && scope.name == "Locals") {
-							topLocals = scope.id;
+				final frame = frames.get(args.frameId);
+				if (frame == null) {
+					respond(message, null, "The program has moved on from that frame.");
+				} else {
+					final top = innermost.get(frame.thread) == args.frameId;
+					forward(message, "getScopes", {threadId: frame.thread, frameId: frame.frame}, function(result:Array<Dynamic>) {
+						for (scope in result) {
+							if (scope.name == "Locals" || scope.name == "Members") {
+								values.set(scope.id, {
+									thread: frame.thread,
+									frame: frame.frame,
+									expression: scope.name == "Members" ? "this" : null,
+									innermost: top
+								});
+							}
 						}
-						if (scope.name == "Locals" || scope.name == "Members") {
-							values.set(scope.id, {frame: frameId, expression: scope.name == "Members" ? "this" : null});
-						}
-					}
-					return {scopes: [for (scope in result) {name: scope.name, variablesReference: scope.id, expensive: false}]};
-				});
+						return {scopes: [for (scope in result) {name: scope.name, variablesReference: scope.id, expensive: false}]};
+					});
+				}
 			case "variables":
 				final params:Dynamic = {variablesReference: args.variablesReference};
 				if (args.start != null) {
@@ -141,21 +181,21 @@ class HxcppAdapter implements Adapter {
 						for (info in result) {
 							final expression = member(parent.expression, info.name);
 							if (info.variablesReference != null && info.variablesReference > 0 && expression != null) {
-								values.set(info.variablesReference, {frame: parent.frame, expression: expression});
+								values.set(info.variablesReference, {thread: parent.thread, frame: parent.frame, expression: expression, innermost: false});
 							}
 						}
 					}
 					return {variables: [for (info in result) variable(info)]};
 				});
 			case "evaluate":
-				if (!stopped) {
+				final frame = frameOf(args.frameId);
+				if (frame == null || !isStopped(frame.thread)) {
 					respond(message, null, "The program is running. Pause it to evaluate expressions.");
 				} else {
-					final frameId:Int = args.frameId ?? topFrame;
-					forward(message, "evaluate", {expr: args.expression, frameId: frameId}, function(info:Dynamic) {
+					forward(message, "evaluate", {threadId: frame.thread, frameId: frame.frame, expr: args.expression}, function(info:Dynamic) {
 						if (info.variablesReference != null && info.variablesReference > 0) {
 							final path = ~/^[A-Za-z_][\w.]*$/.match(args.expression) ? args.expression : '(${args.expression})';
-							values.set(info.variablesReference, {frame: frameId, expression: path});
+							values.set(info.variablesReference, {thread: frame.thread, frame: frame.frame, expression: path, innermost: false});
 						}
 						final body = variable(info);
 						body.result = body.value;
@@ -167,38 +207,50 @@ class HxcppAdapter implements Adapter {
 			case "setVariable":
 				final target = values.get(args.variablesReference);
 				final assigned = target?.expression == null ? null : member(target.expression, args.name);
-				if (args.variablesReference == topLocals) {
-					forward(message, "setVariable", {expr: args.name, value: args.value}, (result:Dynamic) -> {value: Std.string(result.value)});
+				function changed(info:Dynamic):Dynamic {
+					final body = variable(info);
+					Reflect.deleteField(body, "name");
+					return body;
+				}
+				if (target == null) {
+					respond(message, null, 'hxcpp can\'t change ${args.name} from the variables list. An assignment in the debug console may work.');
+				} else if (target.expression == null && features.contains("frames")) {
+					forward(message, "setVariable", {threadId: target.thread, frameId: target.frame, expr: args.name, value: args.value}, changed);
+				} else if (target.expression == null && target.innermost) {
+					forward(message, "setVariable", {expr: args.name, value: args.value}, changed);
+				} else if (target.expression == null) {
+					respond(message, null, "This program's hxcpp-debug-server can only change the local variables of the innermost frame.");
 				} else if (assigned != null) {
-					forward(message, "evaluate", {expr: '$assigned = ${args.value}', frameId: target.frame}, function(info:Dynamic) {
-						final body = variable(info);
-						Reflect.deleteField(body, "name");
-						return body;
-					});
-				} else if (target != null && target.expression == null) {
-					respond(message, null, "hxcpp can only change the local variables of the innermost frame.");
+					forward(message, "evaluate", {threadId: target.thread, frameId: target.frame, expr: '$assigned = ${args.value}'}, changed);
 				} else {
 					respond(message, null, 'hxcpp can\'t change ${args.name} from the variables list. An assignment in the debug console may work.');
 				}
 			case "completions":
-				if (!stopped) {
+				final frame = frameOf(args.frameId);
+				if (frame == null || !isStopped(frame.thread)) {
 					respond(message, {targets: []});
 				} else {
-					forward(message, "completions", {frameId: args.frameId, text: args.text, column: args.column}, function(result:Array<Dynamic>) {
-						return {targets: [for (item in result) {label: item.label, type: "variable"}]};
+					forward(message, "completions", {threadId: frame.thread, frameId: frame.frame, text: args.text, column: args.column}, function(result:Array<Dynamic>) {
+						return {targets: [for (item in result) {label: item.label, type: item.type ?? "variable"}]};
 					});
 				}
 			// Answered before the server is asked: it can report the next stop before it answers, and Zed
 			// must get the answer first.
 			case "continue":
-				resumed();
-				respond(message, {allThreadsContinued: true});
+				// With `stopAll`, or after a pause, everything goes; otherwise only the thread.
+				final everything = stopAll || allStopped;
+				if (everything) {
+					resumed();
+				} else {
+					resumedThread(args.threadId);
+				}
+				respond(message, {allThreadsContinued: everything});
 				tell("continue", {threadId: args.threadId});
 			case "next" | "stepIn" | "stepOut":
 				pauseReason = "step";
-				resumed();
+				resumedThread(args.threadId);
 				respond(message);
-				tell(message.command, {});
+				tell(message.command, {threadId: args.threadId});
 			case "pause":
 				pauseReason = "pause";
 				// The server answers once every thread has stopped, which a thread blocked in native code can
@@ -236,7 +288,7 @@ class HxcppAdapter implements Adapter {
 
 	function launch(request:Message, launch:HxcppLaunch) {
 		final built:Promise<Any> = launch.build == null ? Promise.resolve(null) : Build.run(launch.build, text -> output("console", text));
-		built.then(_ -> start(launch)).then(function(_) {
+		built.then(_ -> start(launch)).then(_ -> configure(launch)).then(function(_) {
 			respond(request);
 			for (message in early) {
 				setBreakpoints(message);
@@ -342,6 +394,18 @@ class HxcppAdapter implements Adapter {
 		});
 	}
 
+	/** Tells the server the session's options, and learns what it can do. **/
+	function configure(launch:HxcppLaunch):Promise<Any> {
+		stopAll = launch.stopAllThreads ?? true;
+		final done = function(result:Dynamic):Any {
+			final reported:Null<Array<String>> = result?.features;
+			features = reported ?? [];
+			ready = true;
+			return null;
+		};
+		return server.request("configure", {stopAllThreads: stopAll}).then(done, _ -> done(null));
+	}
+
 	/** Lets the program run, once it's connected and Zed has sent the breakpoints. **/
 	function run() {
 		final server = server;
@@ -355,11 +419,18 @@ class HxcppAdapter implements Adapter {
 	function setBreakpoints(request:Message) {
 		final args:Dynamic = request.arguments;
 		final requested:Array<Dynamic> = args.breakpoints ?? [];
+		final extras = features.contains("logPoints");
 		final breakpoints = [
 			for (breakpoint in requested) {
 				final params:Dynamic = {line: breakpoint.line};
 				if (breakpoint.condition != null) {
 					params.condition = breakpoint.condition;
+				}
+				if (extras && breakpoint.hitCondition != null) {
+					params.hitCondition = breakpoint.hitCondition;
+				}
+				if (extras && breakpoint.logMessage != null) {
+					params.logMessage = breakpoint.logMessage;
 				}
 				params;
 			}
@@ -367,18 +438,23 @@ class HxcppAdapter implements Adapter {
 		forward(request, "setBreakpoints", {file: args.source.path, breakpoints: breakpoints}, function(result:Array<Dynamic>) {
 			// One id per breakpoint, -1 where it couldn't be set. Older servers leave out the ones that failed.
 			final ids = result != null && result.length == requested.length ? result : null;
-			return {breakpoints: [for (i in 0...requested.length) breakpoint(requested[i], ids == null ? null : ids[i])]};
+			return {breakpoints: [for (i in 0...requested.length) breakpoint(requested[i], ids == null ? null : ids[i], extras)]};
 		});
 	}
 
-	static function breakpoint(requested:Dynamic, id:Null<Int>):Dynamic {
+	static function breakpoint(requested:Dynamic, id:Null<Int>, extras:Bool):Dynamic {
+		final special = requested.hitCondition != null || requested.logMessage != null;
 		if (id != null && id >= 0) {
-			return {verified: true, id: id, line: requested.line};
+			final result:Dynamic = {verified: true, id: id, line: requested.line};
+			if (special && !extras) {
+				result.message = "This program's hxcpp-debug-server ignores hit counts and log messages: it stops here every time.";
+			}
+			return result;
 		}
 		return {
 			verified: false,
 			line: requested.line,
-			message: requested.condition != null ? "The condition doesn't parse, or no code from this file is loaded." : "No code from this file is loaded."
+			message: requested.condition != null || special ? "The condition, hit count or log message doesn't parse, or no code from this file is loaded." : "No code from this file is loaded."
 		};
 	}
 
@@ -389,11 +465,13 @@ class HxcppAdapter implements Adapter {
 		}
 		switch method {
 			case "breakpointStop":
-				stop("breakpoint", params.threadId);
+				stop("breakpoint", params);
 			case "pauseStop":
-				stop(pauseReason, params.threadId);
+				stop(pauseReason, params);
 			case "exceptionStop":
-				stop("exception", 0, params.text);
+				stop("exception", params);
+			case "output":
+				output("console", params.text);
 			case "threadStart":
 				final id:Int = params.threadId;
 				if (!threads.exists(id)) {
@@ -410,22 +488,60 @@ class HxcppAdapter implements Adapter {
 		}
 	}
 
-	function stop(reason:String, threadId:Int, ?text:String) {
-		stopped = true;
+	function stop(reason:String, params:Dynamic) {
+		final threadId:Int = params.threadId ?? 0;
+		// The library's older releases stop every thread.
+		final all:Bool = params.allThreadsStopped ?? true;
+		stoppedThreads.set(threadId, true);
+		if (all) {
+			allStopped = true;
+		}
+		lastStopped = threadId;
 		pauseReason = "pause";
-		final body:Dynamic = {reason: reason, threadId: threadId, allThreadsStopped: true};
-		if (text != null) {
-			body.text = text;
-			body.description = text;
+		final body:Dynamic = {reason: reason, threadId: threadId, allThreadsStopped: all};
+		if (params.text != null) {
+			body.text = params.text;
+			body.description = params.text;
 		}
 		event("stopped", body);
 	}
 
+	function isStopped(thread:Int):Bool {
+		return allStopped || stoppedThreads.exists(thread);
+	}
+
+	/** The thread and server frame Zed's frame id stands for; without one, the latest stop's innermost frame. **/
+	function frameOf(frameId:Null<Int>):Null<{thread:Int, frame:Null<Int>}> {
+		if (frameId != null) {
+			return frames.get(frameId);
+		}
+		return lastStopped == null ? null : {thread: lastStopped, frame: null};
+	}
+
+	/** Every thread went on: what Zed was shown of them no longer holds. **/
 	function resumed() {
-		stopped = false;
-		topFrame = null;
-		topLocals = null;
+		stoppedThreads.clear();
+		allStopped = false;
+		lastStopped = null;
+		frames.clear();
+		innermost.clear();
 		values.clear();
+	}
+
+	/** One thread went on. **/
+	function resumedThread(thread:Int) {
+		stoppedThreads.remove(thread);
+		allStopped = false;
+		if (lastStopped == thread) {
+			lastStopped = null;
+		}
+		for (id in [for (id => frame in frames) if (frame.thread == thread) id]) {
+			frames.remove(id);
+		}
+		innermost.remove(thread);
+		for (reference in [for (reference => value in values) if (value.thread == thread) reference]) {
+			values.remove(reference);
+		}
 	}
 
 	/** Tells Zed the session is over, once. **/
@@ -458,9 +574,9 @@ class HxcppAdapter implements Adapter {
 		return StringTools.startsWith(name, "hxcpp.debug.jsonrpc.") || StringTools.startsWith(name, "cpp.vm.Debugger.");
 	}
 
-	static function stackFrame(info:Dynamic):Dynamic {
+	static function stackFrame(info:Dynamic, id:Int):Dynamic {
 		final frame:Dynamic = {
-			id: info.id,
+			id: id,
 			name: info.name,
 			line: info.line,
 			column: 1
