@@ -71,7 +71,8 @@ class ClassPaths {
 			program: config.program != null ? Planner.absolute(cwd, config.program) : output,
 			hl: config.hl ?? "hl",
 			args: config.args ?? [],
-			env: config.env ?? {}
+			// hashlink-debugger runs the VM with exactly this environment, so it's the whole of it.
+			env: Build.environment(config.env ?? {})
 		};
 		if (config.port != null) {
 			arguments.port = config.port;

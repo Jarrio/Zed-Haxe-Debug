@@ -128,6 +128,9 @@ class PlanTest extends utest.Test {
 		Assert.equals("hl", launch.hl);
 		Assert.same(["one"], launch.args);
 		Assert.equals(dir, launch.cwd);
+		// hashlink-debugger gives the VM exactly this environment: all of it, not only the additions.
+		final inherited = [for (name in Reflect.fields(process.env)) name][0];
+		Assert.equals(Reflect.field(process.env, inherited), launch.env.get(inherited));
 	}
 
 	// Runs a stand-in script, which Windows starts slowly.

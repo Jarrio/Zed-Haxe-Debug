@@ -1751,7 +1751,7 @@ class bridge_targets_HashLink {
 		let tmp = config.hl;
 		let tmp1 = config.args;
 		let tmp2 = config.env;
-		let arguments1 = { cwd : cwd, program : $arguments, hl : tmp != null ? tmp : "hl", args : tmp1 != null ? tmp1 : [], env : tmp2 != null ? tmp2 : { }};
+		let arguments1 = { cwd : cwd, program : $arguments, hl : tmp != null ? tmp : "hl", args : tmp1 != null ? tmp1 : [], env : bridge_Build.environment(tmp2 != null ? tmp2 : { })};
 		if(config.port != null) {
 			arguments1.port = config.port;
 		}
@@ -3167,7 +3167,7 @@ class bridge_targets_Lime {
 		let build = { executable : command.tool[0], args : bridge_targets_Lime.limeArgs(command,"build",projectFile), cwd : dir, env : environment};
 		let tmp = config.args;
 		let tmp1 = config.env;
-		let $arguments = { cwd : dir, program : "", hl : "", args : tmp != null ? tmp : [], env : tmp1 != null ? tmp1 : { }};
+		let $arguments = { cwd : dir, program : "", hl : "", args : tmp != null ? tmp : [], env : bridge_Build.environment(tmp1 != null ? tmp1 : { })};
 		if(config.port != null) {
 			$arguments.port = config.port;
 		}

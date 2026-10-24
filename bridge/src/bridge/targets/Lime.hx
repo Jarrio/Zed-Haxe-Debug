@@ -150,7 +150,8 @@ class Lime {
 			program: "",
 			hl: "",
 			args: config.args ?? [],
-			env: config.env ?? {}
+			// The whole environment, as for HashLink.launch.
+			env: Build.environment(config.env ?? {})
 		};
 		if (config.port != null) {
 			arguments.port = config.port;
