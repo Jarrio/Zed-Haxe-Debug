@@ -93,3 +93,38 @@ jobs:
         with:
           name: haxe-debug
           path: haxe-debug.tar.gz
+
+  install:
+    name: Install scripts (${{ matrix.os }})
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      ZED_DATA_DIR: ${{ github.workspace }}/zed-data
+      HAXE_DEBUG_ARCHIVE: ${{ github.workspace }}/haxe-debug.tar.gz
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          name: haxe-debug
+      - name: An older install to replace
+        shell: bash
+        run: |
+          mkdir -p "$ZED_DATA_DIR/extensions/installed/haxe-debug"
+          touch "$ZED_DATA_DIR/extensions/installed/haxe-debug/old-file" "$ZED_DATA_DIR/extensions/index.json"
+      - if: runner.os != 'Windows'
+        run: sh scripts/install.sh
+      # Windows PowerShell 5.1, the one every Windows has.
+      - if: runner.os == 'Windows'
+        shell: powershell
+        run: ./scripts/install.ps1
+      - name: Installed
+        shell: bash
+        run: |
+          debug="$ZED_DATA_DIR/extensions/installed/haxe-debug"
+          test -f "$debug/extension.toml" && test -f "$debug/extension.wasm" && test -f "$debug/debug_adapter_schemas/Haxe.json"
+          test ! -e "$debug/old-file"
+          test ! -e "$ZED_DATA_DIR/extensions/index.json"

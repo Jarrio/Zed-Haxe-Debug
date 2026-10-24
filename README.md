@@ -45,9 +45,20 @@ So far it has been tested on Linux only.
 
 ### Installing
 
-There's no release in Zed's extension registry yet. To try it, clone this repository, run
-`zed: install dev extension` in Zed and pick the folder. Zed compiles the extension's Rust part, so
-[Rust](https://rustup.rs) has to be installed.
+On Linux and macOS:
+
+```sh
+curl -fsSL https://github.com/Jarrio/Zed-Haxe-Debug/releases/latest/download/install.sh | sh
+```
+
+On Windows, in PowerShell:
+
+```powershell
+irm https://github.com/Jarrio/Zed-Haxe-Debug/releases/latest/download/install.ps1 | iex
+```
+
+Then restart Zed. The script installs the latest release into Zed's extensions folder, in place of an
+earlier one; run it again to update. It isn't in Zed's extension registry yet.
 
 The first time you debug, the extension downloads the debuggers: vshaxe's eval-debugger (from
 vshaxe's extension on Open VSX), hxcpp-debug-server, hashlink-debugger and Microsoft's js-debug.
@@ -390,6 +401,11 @@ Most of the code is Haxe, so that Haxe developers can read and fix it.
 
 ## Development
 
+To work on the extension, clone this repository, run `zed: install dev extension` in Zed and pick the
+folder. Zed compiles the extension's Rust part, so [Rust](https://rustup.rs) has to be installed. A dev
+extension replaces an installed release, and the install script replaces a dev extension (only the
+link to your clone).
+
 The bridge builds with Haxe 4.3.7, so that `bridge/bin/bridge.js`, which is committed, comes out byte
 for byte:
 
@@ -415,7 +431,11 @@ haxelib git hxcpp https://github.com/HaxeFoundation/hxcpp
 HAXELIB_PATH=$PWD/.haxelib node bridge/e2e/run.js --haxe=/path/to/haxe5/haxe
 ```
 
-After changing the extension, rebuild it from Zed's extensions page. To try bridge changes without
+After changing the extension, rebuild it from Zed's extensions page.
+
+To release, set the version in `extension.toml` and push a matching tag (`git tag v0.1.0 && git push
+origin v0.1.0`). The tests run, then a GitHub release gets the packaged extension and the install
+scripts. To try bridge changes without
 rebuilding, point Zed at your build:
 
 ```json

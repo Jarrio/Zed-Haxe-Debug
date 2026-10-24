@@ -1,0 +1,46 @@
+name: Release
+
+# Push a tag matching the version in extension.toml (`git tag v0.1.0 && git push origin v0.1.0`).
+# The tests run first; the release gets the packaged extension and the install scripts.
+# A tag with a hyphen (v0.2.0-beta.1) makes a prerelease, which the install scripts skip.
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  check:
+    name: Tag matches extension.toml
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' extension.toml | head -n 1)
+          [ "v$version" = "$GITHUB_REF_NAME" ] || { echo "The tag is $GITHUB_REF_NAME but extension.toml says $version."; exit 1; }
+
+  test:
+    needs: check
+    uses: ./.github/workflows/test.yml
+
+  publish:
+    name: Publish
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v5
+        with:
+          name: haxe-debug
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          files=(haxe-debug.tar.gz scripts/install.sh scripts/install.ps1)
+          # A release made by hand from an earlier CI package keeps its notes; its files are replaced.
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
+            exit 0
+          fi
+          prerelease=()
+          [[ "$GITHUB_REF_NAME" == *-* ]] && prerelease=(--prerelease)
+          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes "${prerelease[@]}" "${files[@]}"
