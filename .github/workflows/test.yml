@@ -53,8 +53,11 @@ jobs:
       - uses: krdlab/setup-haxe@v2
         with:
           haxe-version: ${{ matrix.haxe }}
-      # For the hxcpp tests, which also need the C++ compiler each runner has.
-      - run: haxelib install hxcpp --quiet --always
+      # For the hxcpp tests, which also need the C++ compiler each runner has. Not with the Haxe nightly:
+      # it needs hxcpp from git, which can't build the debug server with it (see the README's known
+      # issues), so the hxcpp tests skip there.
+      - if: matrix.haxe != 'latest'
+        run: haxelib install hxcpp --quiet --always
       # For the HashLink tests: HashLink 1.16, the stable release, which has no Linux binary, so Linux
       # builds the VM. macOS runners are arm64, where the HashLink VM doesn't run; the tests skip there.
       - name: HashLink (Linux)
@@ -62,6 +65,7 @@ jobs:
         run: |
           git clone --depth 1 --branch 1.16 https://github.com/HaxeFoundation/hashlink "$RUNNER_TEMP/hashlink"
           make -C "$RUNNER_TEMP/hashlink" libhl.so hl
+          sudo cp "$RUNNER_TEMP/hashlink/libhl.so" /usr/local/lib/ && sudo ldconfig
           echo "$RUNNER_TEMP/hashlink" >> "$GITHUB_PATH"
       - name: HashLink (Windows)
         if: runner.os == 'Windows'

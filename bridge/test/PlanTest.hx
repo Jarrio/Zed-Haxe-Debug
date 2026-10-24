@@ -147,7 +147,8 @@ class PlanTest extends utest.Test {
 		final plan = plan(dir, {request: "launch", haxePath: haxe});
 		final output = [];
 		plan.prelaunch.run(text -> output.push(text)).then(function(arguments:HashLinkLaunch) {
-			Assert.same([Path.join([dir, "src"]), dir, "/std/hl/_std/", "/std/"], arguments.classPaths);
+			// The build's own separators, which are \ on Windows.
+			Assert.same([Path.join([dir, "src"]), dir, "/std/hl/_std/", "/std/"].map(Path.normalize), arguments.classPaths.map(Path.normalize));
 			Assert.isTrue(output.join("").indexOf("built") >= 0);
 			async.done();
 		}, function(error) {
@@ -226,7 +227,8 @@ class PlanTest extends utest.Test {
 			"run", "lime", "test", Path.join([dir, "project.xml"]), "linux", "-debug", "-nocolor", '--haxeflag=-cp ${server(dir)}',
 			"--haxeflag=--macro hxcpp.debug.jsonrpc.Macro.injectServer()"
 		], launch.args);
-		Assert.equals(dir, launch.cwd);
+		// The project file's folder, with Haxe's separators.
+		Assert.equals(Path.normalize(dir), Path.normalize(launch.cwd));
 		Assert.equals(0, launch.port);
 	}
 

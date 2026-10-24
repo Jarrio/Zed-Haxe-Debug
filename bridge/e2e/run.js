@@ -134,9 +134,14 @@ function breakLine(file, name) {
 
 const copies = [];
 
+// Windows' own tar, which reads zip files and drive letters; Git Bash puts GNU tar first on PATH.
+const tar = process.platform === "win32" ? path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe") : "tar";
+
 /** Copies e2e/projects/<name> into a new temporary folder whose name has a space. **/
 function copyProject(name) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "haxe debug e2e "));
+  // The real path: on macOS the temporary folder is behind a symlink (/var is /private/var), and the
+  // debuggers report the files they run by their real paths.
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "haxe debug e2e ")));
   fs.cpSync(path.join(__dirname, "projects", name), dir, { recursive: true });
   copies.push(dir);
   return dir;
@@ -674,7 +679,7 @@ async function pinnedEval() {
     console.log(`downloading vshaxe ${version}`);
     await download(`https://open-vsx.org/api/nadako/vshaxe/${version}/file/nadako.vshaxe-${version}.vsix`, vsix);
     // Windows' tar reads zip files; elsewhere unzip does.
-    const [command, extract] = process.platform === "win32" ? ["tar", ["-xf", vsix, "-C", dir, entry]] : ["unzip", ["-o", "-q", vsix, entry, "-d", dir]];
+    const [command, extract] = process.platform === "win32" ? [tar, ["-xf", vsix, "-C", dir, entry]] : ["unzip", ["-o", "-q", vsix, entry, "-d", dir]];
     childProcess.execFileSync(command, extract, { stdio: "inherit" });
   }
   return indexJs;
@@ -690,7 +695,7 @@ async function pinnedHashLink() {
     const vsix = path.join(dir, "hashlink.vsix");
     console.log(`downloading hashlink-debugger ${version}`);
     await download(`https://github.com/vshaxe/hashlink-debugger/releases/download/${version}/haxe-hl-${version}.vsix`, vsix);
-    const [command, extract] = process.platform === "win32" ? ["tar", ["-xf", vsix, "-C", dir, "extension"]] : ["unzip", ["-o", "-q", vsix, "extension/*", "-d", dir]];
+    const [command, extract] = process.platform === "win32" ? [tar, ["-xf", vsix, "-C", dir, "extension"]] : ["unzip", ["-o", "-q", vsix, "extension/*", "-d", dir]];
     childProcess.execFileSync(command, extract, { stdio: "inherit" });
   }
   return adapter;
@@ -706,7 +711,7 @@ async function pinnedJsDebug() {
     const archive = path.join(dir, "js-debug.tar.gz");
     console.log(`downloading js-debug ${version}`);
     await download(`https://github.com/microsoft/vscode-js-debug/releases/download/${version}/js-debug-dap-${version}.tar.gz`, archive);
-    childProcess.execFileSync("tar", ["-xzf", archive, "-C", dir], { stdio: "inherit" });
+    childProcess.execFileSync(tar, ["-xzf", archive, "-C", dir], { stdio: "inherit" });
   }
   return server;
 }
@@ -736,7 +741,7 @@ async function pinnedHxcppDebugServer() {
     const zip = path.join(dir, "archive.zip");
     console.log(`downloading ${repository} at ${commit}`);
     await download(`https://github.com/${repository}/archive/${commit}.zip`, zip);
-    const [command, extract] = process.platform === "win32" ? ["tar", ["-xf", zip, "-C", dir]] : ["unzip", ["-o", "-q", zip, "-d", dir]];
+    const [command, extract] = process.platform === "win32" ? [tar, ["-xf", zip, "-C", dir]] : ["unzip", ["-o", "-q", zip, "-d", dir]];
     childProcess.execFileSync(command, extract, { stdio: "inherit" });
   }
   return server;
