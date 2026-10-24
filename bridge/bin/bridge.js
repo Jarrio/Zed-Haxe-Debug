@@ -533,7 +533,7 @@ class bridge_Planner {
 			return { target : target, adapter : bridge_AdapterKind.Node(bridge_Planner.installed(adapters.eval,"eval-debugger")), cwd : cwd, 'arguments' : bridge_targets_Eval.arguments(config,haxeArgs,output,toolchain), filters : bridge_targets_Eval.filters(config,toolchain)};
 		case "hl":
 			let launch = bridge_targets_HashLink.launch(config,haxeArgs,cwd,toolchain);
-			return { target : target, adapter : bridge_AdapterKind.Node(bridge_Planner.installed(adapters.hashlink,"hashlink-debugger")), cwd : cwd, 'arguments' : launch.arguments, filters : [new bridge_dap_BodylessResponses()], prelaunch : bridge_targets_HashLink.prelaunch(launch.arguments,launch.build)};
+			return { target : target, adapter : bridge_AdapterKind.Node(bridge_Planner.installed(adapters.hashlink,"hashlink-debugger")), cwd : cwd, 'arguments' : launch.arguments, filters : [new bridge_dap_BodylessResponses(),new bridge_targets_HashLinkOutput()], prelaunch : bridge_targets_HashLink.prelaunch(launch.arguments,launch.build)};
 		case "hxcpp":
 			return { target : target, adapter : bridge_AdapterKind.OwnHxcpp, cwd : cwd, 'arguments' : bridge_targets_Hxcpp.launch(config,haxeArgs,cwd,toolchain,adapters.hxcppDebugServer), filters : []};
 		case "js":
@@ -579,7 +579,7 @@ class bridge_Planner {
 			switch(target) {
 			case "hl":
 				let launch = bridge_targets_Lime.hashlink(lime,config,cwd,toolchain,env);
-				return { target : target, adapter : bridge_AdapterKind.Node(bridge_Planner.installed(adapters.hashlink,"hashlink-debugger")), cwd : cwd, 'arguments' : launch.arguments, filters : [new bridge_dap_BodylessResponses()], prelaunch : launch.prelaunch};
+				return { target : target, adapter : bridge_AdapterKind.Node(bridge_Planner.installed(adapters.hashlink,"hashlink-debugger")), cwd : cwd, 'arguments' : launch.arguments, filters : [new bridge_dap_BodylessResponses(),new bridge_targets_HashLinkOutput()], prelaunch : launch.prelaunch};
 			case "html5":
 				let launch1 = bridge_targets_Lime.html5(lime,config,cwd,projectRoot,toolchain,env);
 				return { target : "js", adapter : bridge_AdapterKind.JsDebug(bridge_Planner.installed(adapters.jsDebug,"js-debug")), cwd : cwd, 'arguments' : launch1.arguments, filters : [], prelaunch : launch1.prelaunch};
@@ -1798,6 +1798,21 @@ class bridge_targets_HashLink {
 	}
 }
 bridge_targets_HashLink.__name__ = true;
+class bridge_targets_HashLinkOutput extends bridge_dap_Filter {
+	constructor() {
+		super();
+	}
+	fromDebugger(message,context) {
+		if(message.type == "event" && message.event == "terminated") {
+			haxe_Timer.delay(function() {
+				context.tell(message);
+			},500);
+			return Promise.resolve(null);
+		}
+		return Promise.resolve(message);
+	}
+}
+bridge_targets_HashLinkOutput.__name__ = true;
 class bridge_targets_Hxcpp {
 	static launch(config,haxeArgs,cwd,toolchain,server) {
 		let program = config.program;

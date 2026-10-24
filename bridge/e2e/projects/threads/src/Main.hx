@@ -9,8 +9,9 @@ class Main {
 				lock.release();
 			});
 		}
-		lock.wait();
-		lock.wait();
+		// With a timeout: Haxe 5 on hxcpp master doesn't wait without one (see the README's known issues).
+		lock.wait(60);
+		lock.wait(60);
 		haxe.Timer.delay(function() {
 			final late = "timer";
 			Sys.println('$late fired'); // BREAK timer

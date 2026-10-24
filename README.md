@@ -381,6 +381,9 @@ program that has them. Tested with HashLink 1.16 and the October 2026 nightly, w
 - Haxe unrolls a loop over a small constant range, such as `for (i in 0...10)`, even in a debug build,
   so hxcpp has no `i` to show inside it.
 - HashLink reports a finished step as a stop at a breakpoint.
+- On Haxe 5 with hxcpp master (October 2026), `Lock.wait()` without a timeout returns at once, with or
+  without the debugger: Haxe passes -1 for "no timeout", which hxcpp reads as a deadline already past.
+  A program that waits on a `Lock` carries on without waiting; `lock.wait(seconds)` works.
 
 ## How it works
 

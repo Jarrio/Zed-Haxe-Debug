@@ -888,9 +888,12 @@ async function main() {
     } catch (error) {
       failed++;
       console.log(`FAIL ${name}: ${error.message}`);
-      // The bridge's log (and the debugger's own error output), which CI otherwise loses.
+      // The bridge's log (and the debugger's own error output), and the program's last output, which CI
+      // otherwise loses.
       const log = lastClient?.stderr.trim().split("\n").slice(-25) ?? [];
       if (!verbose && log.length > 0) console.log(log.map((line) => `  | ${line}`).join("\n"));
+      const output = lastClient?.output().trim().split("\n").slice(-10) ?? [];
+      if (output.length > 0) console.log(output.map((line) => `  > ${line}`).join("\n"));
     }
   }
   for (const dir of copies) {
