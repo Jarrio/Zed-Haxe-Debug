@@ -121,9 +121,9 @@ function samePath(a, b) {
   return process.platform === "win32" ? a?.toLowerCase() === b?.toLowerCase() : a === b;
 }
 
-/** Whether the program's output says it ran in `dir` (`cwd <dir>`). **/
-function ranIn(output, dir, separator = path.sep) {
-  const line = `cwd ${dir}${separator}`;
+/** Whether the program's output says it ran in `dir` (`cwd <dir>`; Haxe ends it with / even on Windows). **/
+function ranIn(output, dir) {
+  const line = `cwd ${dir}`;
   return process.platform === "win32" ? output.toLowerCase().includes(line.toLowerCase()) : output.includes(line);
 }
 
@@ -179,7 +179,12 @@ async function start(env, project, config) {
 /** Launches, sets one breakpoint, runs to it and returns the top stack frame and its variables by name. **/
 async function runToBreakpoint({ client, config }, file, line) {
   const launched = client.request("launch", config, buildTime);
-  await client.event("initialized");
+  // A launch that fails before the debugger is ready says why in its response and in the output.
+  const failed = await Promise.race([
+    client.event("initialized", buildTime).then(() => null),
+    launched.then((response) => (response.success ? new Promise(() => {}) : response)),
+  ]).catch((error) => ({ message: error.message }));
+  check(failed == null, `launch failed: ${failed?.message}\n${client.output().slice(-1500)}`);
   const set = await client.request("setBreakpoints", { source: { path: file }, breakpoints: [{ line }] }, buildTime);
   if (!set.success) {
     // Probably because the launch failed, which says why.
@@ -700,7 +705,7 @@ const tests = {
     const output = client.output();
     check(output.includes("hello 5"), `no "hello 5" in the output: ${output}`);
     check(output.includes("args one,two"), `the program didn't get its arguments: ${output}`);
-    check(ranIn(output, dir, ""), `the program didn't run in the project folder: ${output}`);
+    check(ranIn(output, dir), `the program didn't run in the project folder: ${output}`);
     await client.request("disconnect", {});
     await client.close();
   },
