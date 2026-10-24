@@ -116,6 +116,17 @@ function check(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+/** Whether two paths name the same file: on Windows, case doesn't count (js-debug writes c:\). **/
+function samePath(a, b) {
+  return process.platform === "win32" ? a?.toLowerCase() === b?.toLowerCase() : a === b;
+}
+
+/** Whether the program's output says it ran in `dir` (`cwd <dir>`). **/
+function ranIn(output, dir, separator = path.sep) {
+  const line = `cwd ${dir}${separator}`;
+  return process.platform === "win32" ? output.toLowerCase().includes(line.toLowerCase()) : output.includes(line);
+}
+
 /** Waits until `condition()` holds, checking every tenth of a second. **/
 async function eventually(condition, what, ms = 60000) {
   for (let waited = 0; waited < ms; waited += 100) {
@@ -141,11 +152,15 @@ const tar = process.platform === "win32" ? path.join(process.env.SystemRoot ?? "
 function copyProject(name) {
   // The real path: on macOS the temporary folder is behind a symlink (/var is /private/var), and the
   // debuggers report the files they run by their real paths.
-  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "haxe debug e2e ")));
+  // The native one also spells out Windows' short names (RUNNER~1), as programs report their folder.
+  const dir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "haxe debug e2e ")));
   fs.cpSync(path.join(__dirname, "projects", name), dir, { recursive: true });
   copies.push(dir);
   return dir;
 }
+
+/** The latest test's bridge, whose log a failure shows. **/
+let lastClient = null;
 
 async function start(env, project, config) {
   const dir = copyProject(project);
@@ -155,6 +170,7 @@ async function start(env, project, config) {
   const hashlink = env.hashlink ? ["--hashlink", env.hashlink] : [];
   const jsDebug = env.jsDebug ? ["--js-debug", env.jsDebug] : [];
   const client = new Client(env.bridge, dir, ["--config", JSON.stringify(config), "--project", "{}", "--eval", env.eval, ...server, ...hashlink, ...jsDebug, ...trace]);
+  lastClient = client;
   const init = await client.request("initialize", { adapterID: "Haxe", linesStartAt1: true, columnsStartAt1: true, pathFormat: "path" });
   check(init.success, `initialize failed: ${init.message}`);
   return { dir, client, config, capabilities: init.body };
@@ -348,7 +364,7 @@ const tests = {
     const output = client.output();
     check(output.includes("hello 5"), `no "hello 5" in the output: ${output}`);
     check(output.includes("args one,two"), `the program didn't get its arguments: ${output}`);
-    check(output.includes(`cwd ${dir}${path.sep}`), `the program didn't run in the project folder: ${output}`);
+    check(ranIn(output, dir), `the program didn't run in the project folder: ${output}`);
     await client.request("disconnect", {});
     await client.close();
   },
@@ -647,7 +663,7 @@ const tests = {
     const output = client.output();
     check(output.includes("hello 5"), `no "hello 5" in the output: ${output}`);
     check(output.includes("args one,two"), `the program didn't get its arguments: ${output}`);
-    check(output.includes(`cwd ${dir}${path.sep}`), `the program didn't run in the project folder: ${output}`);
+    check(ranIn(output, dir), `the program didn't run in the project folder: ${output}`);
     await client.request("disconnect", {});
     await client.close();
   },
@@ -668,7 +684,7 @@ const tests = {
     const line = breakLine(file, "main");
     const { threadId, frame, variables } = await runToBreakpoint(session, file, line);
     // The source maps lead back to the Haxe code.
-    check(frame.source.path === file && frame.line === line, `stopped at ${frame.source.path}:${frame.line}, expected ${file}:${line}`);
+    check(samePath(frame.source.path, file) && frame.line === line, `stopped at ${frame.source.path}:${frame.line}, expected ${file}:${line}`);
     check(variables.greeting === "'hello'", `greeting is ${variables.greeting}`);
     check(variables.sum === "5", `sum is ${variables.sum}`);
     // The console takes JavaScript.
@@ -678,13 +694,13 @@ const tests = {
     await client.request("next", { threadId });
     await stepped;
     const top = (await client.request("stackTrace", { threadId })).body.stackFrames[0];
-    check(top.source.path === file && top.line === line + 1, `the step stopped at ${top.source?.path}:${top.line}, expected line ${line + 1}`);
+    check(samePath(top.source?.path, file) && top.line === line + 1, `the step stopped at ${top.source?.path}:${top.line}, expected line ${line + 1}`);
     await client.request("continue", { threadId });
     await client.event("terminated");
     const output = client.output();
     check(output.includes("hello 5"), `no "hello 5" in the output: ${output}`);
     check(output.includes("args one,two"), `the program didn't get its arguments: ${output}`);
-    check(output.includes(`cwd ${dir}`), `the program didn't run in the project folder: ${output}`);
+    check(ranIn(output, dir, ""), `the program didn't run in the project folder: ${output}`);
     await client.request("disconnect", {});
     await client.close();
   },
@@ -857,15 +873,26 @@ async function main() {
       console.log(`skip ${name}: ${noHashLink}`);
       continue;
     }
+    lastClient = null;
     try {
       await test(env);
       console.log(`ok ${name}`);
     } catch (error) {
       failed++;
       console.log(`FAIL ${name}: ${error.message}`);
+      // The bridge's log (and the debugger's own error output), which CI otherwise loses.
+      const log = lastClient?.stderr.trim().split("\n").slice(-25) ?? [];
+      if (!verbose && log.length > 0) console.log(log.map((line) => `  | ${line}`).join("\n"));
     }
   }
-  for (const dir of copies) fs.rmSync(dir, { recursive: true, force: true });
+  for (const dir of copies) {
+    try {
+      // On Windows a program that just ended can hold its folder for a moment.
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+    } catch (error) {
+      console.log(`couldn't remove ${dir}: ${error.message}`);
+    }
+  }
   process.exit(failed === 0 ? 0 : 1);
 }
 
