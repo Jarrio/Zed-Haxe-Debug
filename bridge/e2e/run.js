@@ -546,6 +546,23 @@ const tests = {
     await client.close();
   },
 
+  // An uncaught exception stops the program where it was thrown, with its message.
+  async hxcppException(env) {
+    const session = await start(env, "throws", { request: "launch" });
+    const { client, config } = session;
+    const file = path.join(session.dir, "src", "Main.hx");
+    const launched = client.request("launch", config, buildTime);
+    await client.event("initialized");
+    await client.request("configurationDone", {});
+    check((await launched).success, "launch failed");
+    const stop = (await client.event("stopped")).body;
+    check(stop.reason === "exception" && /broken 3/.test(stop.text), `the stop was ${JSON.stringify(stop)}`);
+    const frames = (await client.request("stackTrace", { threadId: stop.threadId })).body.stackFrames;
+    check(frames[0].name === "Main.fail" && frames[0].line === breakLine(file, "throw"), `stopped at ${JSON.stringify(frames[0])}`);
+    await client.request("disconnect", {});
+    await client.close();
+  },
+
   async hxcppBuildError(env) {
     const { client, config } = await start(env, "hxcpp", { request: "launch", haxeArgs: ["-cp", "src", "-main", "Missing", "--cpp", "bin"] });
     const launch = await client.request("launch", config, buildTime);
