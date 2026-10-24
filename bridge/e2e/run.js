@@ -357,6 +357,17 @@ const tests = {
     await client.close();
   },
 
+  // Full paths in positions, as in Ceramic's builds, hide the debug server's frames from its own check.
+  async hxcppAbsolutePaths(env) {
+    const session = await start(env, "hxcpp", { request: "launch", haxeArgs: ["-cp", "src", "-main", "Main", "--cpp", "bin", "-D", "absolute-path"] });
+    const file = path.join(session.dir, "src", "Main.hx");
+    const { frame, variables } = await runToBreakpoint(session, file, breakLine(file, "main"));
+    check(frame.name === "Main.main", `the top frame is ${frame.name}`);
+    check(variables.sum === "5", `sum is ${variables.sum}`);
+    await session.client.request("disconnect", {});
+    await session.client.close();
+  },
+
   async hxcppBuildError(env) {
     const { client, config } = await start(env, "hxcpp", { request: "launch", haxeArgs: ["-cp", "src", "-main", "Missing", "--cpp", "bin"] });
     const launch = await client.request("launch", config, buildTime);

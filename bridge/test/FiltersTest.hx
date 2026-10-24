@@ -3,6 +3,7 @@ import bridge.dap.Filter.FilterContext;
 import bridge.dap.Message;
 import bridge.dap.VariableEdits;
 import bridge.targets.EvalCompletions;
+import bridge.targets.EvalFrameNames;
 import bridge.targets.EvalScopes;
 import bridge.targets.EvalThreads;
 import js.lib.Promise;
@@ -158,6 +159,25 @@ class FiltersTest extends utest.Test {
 			return filter.fromDebugger({seq: 2, type: "response", request_seq: 2, command: "setVariable", success: true}, context);
 		}).then(function(_) {
 			Assert.equals("Couldn't change s: the debugger can't make the value \"bye\"\n", told[1].body.output);
+			async.done();
+		});
+	}
+
+	function testEvalLocalFunctionsAreNamedAfterTheirMethod(async:Async) {
+		final dir = Fixture.create({
+			"src/game/Main.hx": "package game;\n\nclass Main {\n\tstatic function main() {\n\t\thaxe.Timer.delay(function() {\n\t\t\ttrace(1);\n\t\t}, 50);\n\t}\n}\n"
+		});
+		final path = haxe.io.Path.join([dir, "src", "game", "Main.hx"]);
+		final trace = response("stackTrace", {
+			stackFrames: [
+				{id: 0, name: "sys.thread._EventLoop.RegularEvent.run.localFunction1.localFunction3", line: 6, source: {path: path}},
+				{id: 1, name: "localFunction1.localFunction1", line: 1, source: {path: haxe.io.Path.join([dir, "nowhere.hx"])}},
+				{id: 2, name: "Main.main", line: 5, source: {path: path}}
+			]
+		});
+		new EvalFrameNames().fromDebugger(trace, threads([], [])).then(function(message) {
+			final frames:Array<Dynamic> = message.body.stackFrames;
+			Assert.same(["local function in game.Main.main", "local function", "Main.main"], frames.map(frame -> frame.name));
 			async.done();
 		});
 	}

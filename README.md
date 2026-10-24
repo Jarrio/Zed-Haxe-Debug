@@ -10,7 +10,7 @@ Breakpoints, stepping, variables and the debug console for Haxe in Zed.
 | HashLink (`--hl`) | [hashlink-debugger](https://github.com/vshaxe/hashlink-debugger) | works |
 | JavaScript (`--js`), run by Node or in a browser | [js-debug](https://github.com/microsoft/vscode-js-debug), as in Zed's own JavaScript support | works, with breakpoints in the Haxe code |
 | Lime, OpenFL and Flixel projects: desktop, `hl` and `html5` targets | the target's debugger, above | works |
-| Ceramic projects: `web` and desktop targets | the target's debugger, above | `web` works; desktop builds, but hasn't been seen to stop yet (see "Ceramic") |
+| Ceramic projects: `web` and desktop targets | the target's debugger, above | works |
 
 Between Zed and the debuggers sits a **bridge written in Haxe** (`bridge/`), which:
 
@@ -200,6 +200,30 @@ The browser is Chrome, Chromium, Edge or Brave: the one `browser` names, else th
 your PATH, else an installed Chrome. It opens with a profile of its own, so it doesn't touch your usual
 one. Breakpoints, stepping and the console work as with Node.
 
+### Threads and timers
+
+Breakpoints in timer callbacks (`haxe.Timer.delay`) work with every debugger. Breakpoints in threads
+(`sys.thread.Thread`) depend on the debugger:
+
+| | Breakpoints in a thread | Stepping in a thread |
+|---|---|---|
+| eval | yes, one thread at a time | yes |
+| hxcpp | no | no |
+| HashLink | on Linux, end the program | no |
+| JavaScript | Haxe's JavaScript has no threads | |
+
+- eval: while one thread is stopped, another thread that reaches a breakpoint runs past it.
+- hxcpp starts each thread unable to stop, and hxcpp-debug-server only lets the main thread stop, so
+  other threads run past their breakpoints. Stepping always steps the main thread.
+- HashLink: on Linux, the VM's debugger support traces only the program's main thread (`ptrace`), so
+  a breakpoint that another thread reaches ends the program. Breakpoints outside threads work in a
+  program that has them. Tested with HashLink 1.16 and the nightly of October 2026, and with
+  hashlink-debugger 2.0.0 and 1.4.33.
+
+eval names a local function's frame after the code that called it, such as
+`sys.thread._EventLoop.RegularEvent.run.localFunction1` for a timer callback. The bridge names it after
+the method it's written in instead: "local function in Main.main".
+
 ### Lime, OpenFL and Flixel
 
 In a folder with a Lime project file (`project.xml`, `Project.xml`, `project.hxp` or `project.lime`,
@@ -254,9 +278,8 @@ Zed-Haxe's `target` setting names, else `web`. Ceramic builds with its own Haxe,
   `ceramic <backend> run <target> --assets --debug --no-skip`. The next setup without the debugger
   writes the file afresh.
 
-Tested with Ceramic's tools 2.1.0. `web` stops at breakpoints. On Linux, the desktop build gets as far as
-compiling the debug server into the program; the machine it was tested on lacked the GLU headers
-Ceramic's C++ needs, so it hasn't been seen to stop at a breakpoint yet.
+Tested with Ceramic's tools 2.1.0, `web` and `linux`. The Linux build needs the GLU headers
+(`libglu1-mesa-dev` on Debian and Ubuntu).
 
 ## Known issues
 
@@ -288,8 +311,7 @@ Ceramic's C++ needs, so it hasn't been seen to stop at a breakpoint yet.
   - classes by their short name: `flixel.FlxG.width` works, `FlxG.width` doesn't
 
   A field that doesn't exist reads as `null`.
-- hxcpp can change local variables only in the innermost frame, and stepping always steps the main
-  thread.
+- hxcpp can change local variables only in the innermost frame.
 - The Haxe 5 nightly of October 2026 can't build any program that uses `sys.thread.Thread.current()`
   against hxcpp master of the same month, and the debug server uses it.
 - A debug build with hxcpp-debug-server doesn't exit when it runs without the debugger: the server

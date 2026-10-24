@@ -12,7 +12,7 @@ import bridge.toolchain.Toolchain.ResolvedToolchain;
 class Eval {
 	/** Workarounds for the debugger and the compiler's side of it. **/
 	public static function filters(config:LaunchConfig, toolchain:ResolvedToolchain):Array<Filter> {
-		final filters:Array<Filter> = [new BodylessResponses(), new EvalThreads()];
+		final filters:Array<Filter> = [new BodylessResponses(), new EvalThreads(), new EvalFrameNames()];
 		if (toolchain.major >= 5) {
 			filters.push(new EvalCompletions());
 		}

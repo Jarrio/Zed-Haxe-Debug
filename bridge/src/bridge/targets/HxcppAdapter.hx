@@ -102,7 +102,13 @@ class HxcppAdapter implements Adapter {
 				}
 			case "stackTrace":
 				forward(message, "stackTrace", {threadId: args.threadId}, function(result:Array<Dynamic>) {
-					final frames = [for (frame in result) stackFrame(frame)];
+					// The server leaves out its own frames by their file name, which a build with full paths in
+					// its positions (`-D absolute-path`, as Ceramic's) doesn't match.
+					var first = 0;
+					while (first < result.length && isDebuggerFrame(result[first])) {
+						first++;
+					}
+					final frames = [for (frame in result.slice(first)) stackFrame(frame)];
 					topFrame = frames.length > 0 ? frames[0].id : null;
 					final start:Int = args.startFrame ?? 0;
 					final levels:Int = args.levels ?? 0;
@@ -445,6 +451,11 @@ class HxcppAdapter implements Adapter {
 		server.request(method, params)
 			.then(result -> body == null ? null : body(result))
 			.then(result -> respond(request, result), (error:Dynamic) -> respond(request, null, Std.string(error)));
+	}
+
+	static function isDebuggerFrame(info:Dynamic):Bool {
+		final name:String = info.name ?? "";
+		return StringTools.startsWith(name, "hxcpp.debug.jsonrpc.") || StringTools.startsWith(name, "cpp.vm.Debugger.");
 	}
 
 	static function stackFrame(info:Dynamic):Dynamic {

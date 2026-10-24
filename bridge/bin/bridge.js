@@ -1435,7 +1435,7 @@ class bridge_targets_Ceramic {
 bridge_targets_Ceramic.__name__ = true;
 class bridge_targets_Eval {
 	static filters(config,toolchain) {
-		let filters = [new bridge_dap_BodylessResponses(),new bridge_targets_EvalThreads()];
+		let filters = [new bridge_dap_BodylessResponses(),new bridge_targets_EvalThreads(),new bridge_targets_EvalFrameNames()];
 		if(toolchain.major >= 5) {
 			filters.push(new bridge_targets_EvalCompletions());
 		}
@@ -1468,6 +1468,72 @@ class bridge_targets_EvalCompletions extends bridge_dap_Filter {
 	}
 }
 bridge_targets_EvalCompletions.__name__ = true;
+class bridge_targets_EvalFrameNames extends bridge_dap_Filter {
+	constructor() {
+		bridge_dap_Filter._hx_skip_constructor = true;
+		super();
+		bridge_dap_Filter._hx_skip_constructor = false;
+		this._hx_constructor();
+	}
+	_hx_constructor() {
+		this.files = new haxe_ds_StringMap();
+		super._hx_constructor();
+	}
+	fromDebugger(message,context) {
+		if(message.type == "response" && message.command == "stackTrace" && message.success == true) {
+			let tmp = message.body;
+			let tmp1 = tmp != null ? tmp.stackFrames : null;
+			let frames = tmp1 != null ? tmp1 : [];
+			let _g = 0;
+			while(_g < frames.length) {
+				let frame = frames[_g];
+				++_g;
+				let tmp = frame.name;
+				let name = tmp != null ? tmp : "";
+				if(bridge_targets_EvalFrameNames.local.match(name)) {
+					let tmp = frame.source;
+					let method = (tmp != null ? tmp.path : null) == null ? null : this.enclosing(frame.source.path,frame.line);
+					frame.name = method == null ? "local function" : "local function in " + method;
+				}
+			}
+		}
+		return Promise.resolve(message);
+	}
+	enclosing(path,line) {
+		let text = this.read(path);
+		if(text == null) {
+			return null;
+		}
+		let lines = text.split("\n");
+		let index = (Math.min(line,lines.length) | 0) - 1;
+		while(index >= 0 && !bridge_targets_EvalFrameNames.namedFunction.match(lines[index])) --index;
+		if(index < 0) {
+			return null;
+		}
+		let method = bridge_targets_EvalFrameNames.namedFunction.matched(1);
+		while(index >= 0 && !bridge_targets_EvalFrameNames.type.match(lines[index])) --index;
+		if(index < 0) {
+			return null;
+		}
+		let prefix = bridge_targets_EvalFrameNames.packageName.match(text) ? bridge_targets_EvalFrameNames.packageName.matched(1) + "." : "";
+		return "" + prefix + bridge_targets_EvalFrameNames.type.matched(1) + "." + method;
+	}
+	read(path) {
+		try {
+			let time = js_node_Fs.statSync(path).mtime.getTime();
+			let known = this.files.h[path];
+			if(known != null && known.time == time) {
+				return known.text;
+			}
+			let text = js_node_Fs.readFileSync(path,{ encoding : "utf8"});
+			this.files.h[path] = { time : time, text : text};
+			return text;
+		} catch( _g ) {
+			return null;
+		}
+	}
+}
+bridge_targets_EvalFrameNames.__name__ = true;
 class bridge_targets_EvalScopes extends bridge_dap_Filter {
 	constructor() {
 		bridge_dap_Filter._hx_skip_constructor = true;
@@ -1944,10 +2010,13 @@ class bridge_targets_HxcppAdapter {
 				break;
 			case "stackTrace":
 				this.forward(message,"stackTrace",{ threadId : args.threadId},function(result) {
+					let first = 0;
+					while(first < result.length && bridge_targets_HxcppAdapter.isDebuggerFrame(result[first])) ++first;
 					let _g = [];
 					let _g1 = 0;
-					while(_g1 < result.length) {
-						let frame = result[_g1];
+					let _g2 = result.slice(first);
+					while(_g1 < _g2.length) {
+						let frame = _g2[_g1];
 						++_g1;
 						_g.push(bridge_targets_HxcppAdapter.stackFrame(frame));
 					}
@@ -2321,6 +2390,15 @@ class bridge_targets_HxcppAdapter {
 			return { verified : true, id : id, line : requested.line};
 		}
 		return { verified : false, line : requested.line, message : requested.condition != null ? "The condition doesn't parse, or no code from this file is loaded." : "No code from this file is loaded."};
+	}
+	static isDebuggerFrame(info) {
+		let tmp = info.name;
+		let name = tmp != null ? tmp : "";
+		if(!name.startsWith("hxcpp.debug.jsonrpc.")) {
+			return name.startsWith("cpp.vm.Debugger.");
+		} else {
+			return true;
+		}
 	}
 	static stackFrame(info) {
 		let frame = { id : info.id, name : info.name, line : info.line, column : 1};
@@ -4318,6 +4396,10 @@ bridge_dap_BodylessResponses.commands = ["attach","launch","configurationDone","
 bridge_dap_Connection.contentLength = new EReg("Content-Length:\\s*(\\d+)","i");
 bridge_dap_VariableEdits.resuming = ["continue","next","stepIn","stepOut","stepBack","reverseContinue","restartFrame","goto","restart"];
 bridge_targets_Ceramic.native = ["linux","mac","windows"];
+bridge_targets_EvalFrameNames.local = new EReg("(^|\\.)localFunction\\d+$","");
+bridge_targets_EvalFrameNames.namedFunction = new EReg("\\bfunction\\s+([A-Za-z_]\\w*)","");
+bridge_targets_EvalFrameNames.type = new EReg("\\b(?:class|interface|abstract|enum(?!\\s+abstract))\\s+([A-Za-z_]\\w*)","");
+bridge_targets_EvalFrameNames.packageName = new EReg("^\\s*package\\s+([\\w.]+)\\s*;","m");
 bridge_targets_HashLink.helper = "zed.haxedebug.ClassPaths";
 bridge_targets_HashLink.helperSource = "package zed.haxedebug;\n\n// Written by the Haxe debugger for Zed, for the duration of one build.\nclass ClassPaths {\n\tpublic static function write(file:String) {\n\t\tvar paths = [for (path in haxe.macro.Context.getClassPath()) sys.FileSystem.absolutePath(path == \"\" ? \".\" : path)];\n\t\tsys.io.File.saveContent(file, haxe.Json.stringify(paths));\n\t}\n}\n";
 bridge_targets_Lime.projectFiles = ["project.xml","Project.xml","project.hxp","project.lime"];
