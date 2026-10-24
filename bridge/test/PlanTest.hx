@@ -1,7 +1,9 @@
 import bridge.Plan;
 import bridge.Settings.ProjectSettings;
+import bridge.targets.Ceramic;
 import bridge.targets.EvalCompletions;
 import bridge.targets.HashLink;
+import bridge.targets.Lime;
 import bridge.targets.Hxcpp;
 import haxe.DynamicAccess;
 import haxe.io.Path;
@@ -179,12 +181,132 @@ class PlanTest extends utest.Test {
 		Assert.isFalse(launch.pauseForSourceMap);
 	}
 
+	function testJavaScriptPagesOpenInABrowser() {
+		final dir = Fixture.create({"build.hxml": "-cp src\n-main Main\n--js bin/main.js"});
+		final plan = plan(dir, {request: "launch", webRoot: "bin", browser: "/opt/chromium/chrome"});
+		Assert.equals("js", plan.target);
+		Assert.same(["-cp", "src", "-main", "Main", "--js", "bin/main.js", "-debug", "-D", "js-source-map"], plan.prelaunch.build.args);
+		final launch:Dynamic = plan.arguments;
+		Assert.equals("pwa-chrome", launch.type);
+		Assert.equals(Path.join([dir, "bin"]), launch.webRoot);
+		Assert.equals("/opt/chromium/chrome", launch.runtimeExecutable);
+		// Filled in when the bridge serves the folder.
+		Assert.isNull(launch.url);
+		Assert.equals(dir, launch.__workspaceFolder);
+	}
+
 	function testJavaScriptRunsAProgramAlreadyBuilt() {
 		final dir = Fixture.create({"src/Main.hx": ""});
 		final plan = plan(dir, {request: "launch", program: "bin/main.js"});
 		Assert.equals("js", plan.target);
 		Assert.isNull(plan.prelaunch);
 		Assert.equals(Path.join([dir, "bin", "main.js"]), plan.arguments.program);
+	}
+
+	function testLimeCommandsAreRead() {
+		final command = Lime.parse(["haxelib", "run", "lime", "test", "project.xml", "linux", "-final"]);
+		Assert.same(["haxelib", "run", "lime"], command.tool);
+		Assert.equals("test", command.action);
+		Assert.equals("project.xml", command.projectFile);
+		Assert.equals("linux", command.target);
+		Assert.same(["-final"], command.flags);
+		Assert.equals("hl", Lime.parse(["openfl", "build", "hl", "-debug"]).target);
+		Assert.isNull(Lime.parse(["haxe", "build.hxml"]));
+	}
+
+	function testLimeDebugsANativeBuildThroughLimeTest() {
+		final dir = Fixture.create({"project.xml": "<project/>"});
+		final plan = plan(dir, {request: "launch", command: ["haxelib", "run", "lime", "build", "project.xml", "linux", "-final"]});
+		Assert.equals("hxcpp", plan.target);
+		final launch:HxcppLaunch = plan.arguments;
+		Assert.isTrue(launch.launcher);
+		Assert.equals("haxelib", launch.program);
+		// A debug build that Lime also runs, with the debug server added through --haxeflag.
+		Assert.same([
+			"run", "lime", "test", Path.join([dir, "project.xml"]), "linux", "-debug", "-nocolor", '--haxeflag=-cp ${server(dir)}',
+			"--haxeflag=--macro hxcpp.debug.jsonrpc.Macro.injectServer()"
+		], launch.args);
+		Assert.equals(dir, launch.cwd);
+		Assert.equals(0, launch.port);
+	}
+
+	function testLimeProjectsNeedNoConfiguration() {
+		final dir = Fixture.create({"game/Project.xml": "<project/>"});
+		// The target the language server uses.
+		final plan = plan(dir, {request: "launch"}, {target: "hl"});
+		Assert.equals("hl", plan.target);
+		Assert.same(["run", "lime", "build", Path.join([dir, "game", "Project.xml"]), "hl", "-debug", "-nocolor"], plan.prelaunch.build.args);
+		Assert.equals(Path.join([dir, "game"]), plan.prelaunch.build.cwd);
+	}
+
+	function testLimeKeepsTheProjectsOwnDebugServer() {
+		final dir = Fixture.create({"project.xml": '<project><haxelib name="hxcpp-debug-server" if="debug"/></project>'});
+		final launch:HxcppLaunch = plan(dir, {request: "launch", command: ["lime", "test", "linux"]}).arguments;
+		Assert.isFalse(launch.args.exists(arg -> StringTools.startsWith(arg, "--haxeflag")));
+		Assert.equals(Hxcpp.defaultPort, launch.port);
+	}
+
+	function testLimeHtml5BuildsWithSourceMaps() {
+		final dir = Fixture.create({"project.xml": "<project/>"});
+		final plan = plan(dir, {request: "launch", command: ["lime", "test", "html5", "-release"]});
+		Assert.equals("js", plan.target);
+		Assert.isTrue(plan.adapter.match(JsDebug(_)));
+		Assert.same(["build", "html5", "-debug", "-nocolor", "--haxeflag=-D js-source-map"], plan.prelaunch.build.args);
+		Assert.equals("pwa-chrome", plan.arguments.type);
+	}
+
+	function testCeramicCommandsAreRead() {
+		final command = Ceramic.parse(["ceramic", "clay", "run", "linux", "--setup", "--assets", "--variant", "demo"]);
+		Assert.equals("clay", command.backend);
+		Assert.equals("linux", command.target);
+		Assert.same(["--variant", "demo"], command.flags);
+		Assert.equals("hxcpp", Ceramic.debugger("mac"));
+		Assert.equals("js", Ceramic.debugger("web"));
+		Assert.isNull(Ceramic.parse(["lime", "test", "linux"]));
+	}
+
+	function testCeramicProjectsNeedNoConfiguration() {
+		final dir = Fixture.create({"ceramic.yml": "app:\n  name: demo\n"});
+		// Zed-Haxe's default Ceramic target, web, which runs in a browser.
+		final plan = plan(dir, {request: "launch"});
+		Assert.equals("js", plan.target);
+		Assert.isTrue(plan.adapter.match(JsDebug(_)));
+		Assert.equals("ceramic", plan.prelaunch.build.executable);
+		Assert.same(["clay", "build", "web", "--setup", "--assets", "--debug"], plan.prelaunch.build.args);
+		Assert.equals("pwa-chrome", plan.arguments.type);
+	}
+
+	function testCeramicDesktopAddsTheDebugServerToItsHxml(async:utest.Async) {
+		final dir = Fixture.create({"ceramic.yml": "app:\n  name: demo\n"});
+		// Writes the hxml as `ceramic clay setup linux --debug` does.
+		final ceramic = Fixture.script(dir, "tools/ceramic", "
+			const fs = require('fs');
+			fs.mkdirSync('out/clay/linux-debug', {recursive: true});
+			fs.writeFileSync('out/clay/linux-debug/project.hxml', '-main Main\\n--cpp out\\n');
+		");
+		final plan = plan(dir, {request: "launch", command: [ceramic, "clay", "run", "linux", "--setup", "--assets"]});
+		Assert.equals("hxcpp", plan.target);
+		Assert.same(["clay", "setup", "linux", "--debug"], plan.prelaunch.build.args);
+		final launch:HxcppLaunch = plan.arguments;
+		Assert.isTrue(launch.launcher);
+		Assert.same(["clay", "run", "linux", "--assets", "--debug", "--no-skip"], launch.args);
+		plan.prelaunch.run(_ -> {}).then(function(_) {
+			final hxml = sys.io.File.getContent(Path.join([dir, "out", "clay", "linux-debug", "project.hxml"]));
+			Assert.stringContains('-cp ${server(dir)}', hxml);
+			Assert.stringContains("--macro hxcpp.debug.jsonrpc.Macro.injectServer()", hxml);
+			async.done();
+		}, function(error) {
+			Assert.fail(Std.string(error));
+			async.done();
+		});
+	}
+
+	function testUnknownCommandsNeedATarget() {
+		final dir = Fixture.create({"build.sh": ""});
+		Assert.stringContains('"target": "hxcpp"', launchError(() -> plan(dir, {request: "launch", command: ["./build.sh"]})));
+		final launch:HxcppLaunch = plan(dir, {request: "launch", command: ["./build.sh", "run"], target: "hxcpp"}).arguments;
+		Assert.isTrue(launch.launcher);
+		Assert.same(["run"], launch.args);
 	}
 
 	function testHxcppNeedsTheDebugServer() {

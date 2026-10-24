@@ -87,26 +87,37 @@ class ClassPaths {
 		return {
 			build: build,
 			run: function(output) {
-				final dir = js.node.Fs.mkdtempSync(Path.join([Os.tmpdir(), "haxe-debug-"]));
-				final file = Path.join([dir, "classpaths.json"]);
-				FileSystem.createDirectory(Path.join([dir, "zed", "haxedebug"]));
-				File.saveContent(Path.join([dir, "zed", "haxedebug", "ClassPaths.hx"]), helperSource);
-				function cleanUp() {
-					js.Syntax.code("require('fs').rmSync({0}, {recursive: true, force: true})", dir);
-				}
-				return Build.run(build, output, ["-cp", dir, "--macro", '$helper.write(${Json.stringify(file)})']).then(function(_):Dynamic {
-					final paths:Array<String> = Json.parse(File.getContent(file));
-					cleanUp();
-					arguments.classPaths = [for (path in paths) if (Path.normalize(path) != Path.normalize(dir)) path];
+				return classPaths(build, output, (dir, call) -> ["-cp", dir, "--macro", call]).then(function(paths):Dynamic {
+					arguments.classPaths = paths;
 					if (!FileSystem.exists(arguments.program)) {
 						return Promise.reject('The build didn\'t make ${arguments.program}. If it writes the program elsewhere, set "program" in the debug configuration.');
 					}
 					return arguments;
-				}, function(error:Dynamic):Dynamic {
-					cleanUp();
-					return Promise.reject(error);
 				});
 			}
 		};
+	}
+
+	/**
+		Runs `build` with the class path helper added, and resolves with the build's class paths. `flags`
+		makes the build's arguments for the helper's folder and the call that writes the paths: plain Haxe
+		arguments, or Lime's `--haxeflag`s.
+	**/
+	public static function classPaths(build:HaxeRun, output:String->Void, flags:(dir:String, call:String) -> Array<String>):Promise<Array<String>> {
+		final dir = js.node.Fs.mkdtempSync(Path.join([Os.tmpdir(), "haxe-debug-"]));
+		final file = Path.join([dir, "classpaths.json"]);
+		FileSystem.createDirectory(Path.join([dir, "zed", "haxedebug"]));
+		File.saveContent(Path.join([dir, "zed", "haxedebug", "ClassPaths.hx"]), helperSource);
+		function cleanUp() {
+			js.Syntax.code("require('fs').rmSync({0}, {recursive: true, force: true})", dir);
+		}
+		return Build.run(build, output, flags(dir, '$helper.write(${Json.stringify(file)})')).then(function(_) {
+			final paths:Array<String> = Json.parse(File.getContent(file));
+			cleanUp();
+			return [for (path in paths) if (Path.normalize(path) != Path.normalize(dir)) path];
+		}, function(error:Dynamic):Dynamic {
+			cleanUp();
+			return Promise.reject(error);
+		});
 	}
 }

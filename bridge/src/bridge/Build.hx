@@ -46,10 +46,10 @@ class Build {
 			final errors = [];
 			child.stdout.setEncoding("utf8");
 			child.stderr.setEncoding("utf8");
-			child.stdout.on("data", (text:String) -> output(text));
+			child.stdout.on("data", (text:String) -> output(plain(text)));
 			child.stderr.on("data", function(text:String) {
-				errors.push(text);
-				output(text);
+				errors.push(plain(text));
+				output(plain(text));
 			});
 			child.on("error", (error:js.lib.Error) -> reject('Couldn\'t run ${run.executable}: ${error.message}'));
 			child.on("close", function(code:Null<Int>, signal:Null<String>) {
@@ -73,6 +73,11 @@ class Build {
 		for (child in running) {
 			child.kill();
 		}
+	}
+
+	/** `text` without terminal colour codes, which tools such as Ceramic print whatever they're told. **/
+	public static function plain(text:String):String {
+		return ~/\x1b\[[0-9;]*[A-Za-z]/g.replace(text, "");
 	}
 
 	/** The bridge's environment with `extra` added. **/

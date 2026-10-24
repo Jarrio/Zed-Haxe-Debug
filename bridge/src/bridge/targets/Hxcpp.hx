@@ -28,6 +28,12 @@ typedef HxcppLaunch = {
 		`HXCPP_DEBUG_PORT`, which only the debug server the extension brings reads.
 	**/
 	final port:Int;
+
+	/**
+		`program` is a tool that builds and starts the real program, such as `haxelib run lime test`: it's
+		looked up on PATH, and has as long as it runs for the program to connect.
+	**/
+	final ?launcher:Bool;
 }
 
 /**

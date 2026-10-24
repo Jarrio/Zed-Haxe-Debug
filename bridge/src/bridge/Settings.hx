@@ -11,6 +11,9 @@ typedef ProjectSettings = {
 	/** Folder of the Haxe project, relative to the workspace root (for monorepos). **/
 	var ?root:String;
 
+	/** Forces a provider by name (`"lime"`, `"ceramic"`, `"hxml"`, or a custom one). **/
+	var ?provider:String;
+
 	/** Target to use; for plain hxml projects, the path of the hxml. **/
 	var ?target:String;
 

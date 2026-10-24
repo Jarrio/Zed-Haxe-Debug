@@ -151,7 +151,8 @@ impl zed::Extension for HaxeDebugExtension {
     }
 
     /// The new-session dialog. Its "program" is an hxml or a Haxe argument, with more Haxe arguments
-    /// after it, or `haxe` followed by its arguments; anything else is an hxcpp program already built.
+    /// after it, `haxe` followed by its arguments, or a project tool (`lime test linux`); anything else is
+    /// an hxcpp program already built.
     fn dap_config_to_scenario(&mut self, config: DebugConfig) -> Result<DebugScenario> {
         let DebugRequest::Launch(launch) = config.request else {
             return Err("Haxe debugging can't attach to a running program yet".to_string());
@@ -162,6 +163,10 @@ impl zed::Extension for HaxeDebugExtension {
         });
         if is_haxe(&launch.program) {
             scenario["haxeArgs"] = launch.args.into();
+        } else if is_project_tool(&launch.program, &launch.args) {
+            let mut command = vec![launch.program];
+            command.extend(launch.args);
+            scenario["command"] = command.into();
         } else if launch.program.ends_with(".hxml") || launch.program.starts_with('-') {
             let mut haxe_args = vec![launch.program];
             haxe_args.extend(launch.args);
@@ -190,8 +195,9 @@ impl zed::Extension for HaxeDebugExtension {
         })
     }
 
-    /// `haxe build.hxml` tasks (Zed-Haxe writes them for plain hxml projects). The debugger compiles
-    /// the program itself, so there is no build step.
+    /// The tasks Zed-Haxe writes: `haxe build.hxml` for plain hxml projects, Lime's
+    /// `haxelib run lime test|build <project> <target>` and Ceramic's `ceramic <backend> run|build <target>`. The bridge builds the program itself, in debug
+    /// mode, so there is no build step.
     fn dap_locator_create_scenario(
         &mut self,
         locator_name: String,
@@ -199,13 +205,20 @@ impl zed::Extension for HaxeDebugExtension {
         resolved_label: String,
         _debug_adapter_name: String,
     ) -> Option<DebugScenario> {
-        if locator_name != LOCATOR
-            || !is_haxe(&build_task.command)
-            || !build_task.args.iter().any(|arg| arg.ends_with(".hxml"))
-        {
+        if locator_name != LOCATOR {
             return None;
         }
-        let mut config = json!({"request": "launch", "haxeArgs": build_task.args});
+        let mut config = if is_haxe(&build_task.command)
+            && build_task.args.iter().any(|arg| arg.ends_with(".hxml"))
+        {
+            json!({"request": "launch", "haxeArgs": build_task.args})
+        } else if is_project_tool(&build_task.command, &build_task.args) {
+            let mut command = vec![build_task.command];
+            command.extend(build_task.args);
+            json!({"request": "launch", "command": command})
+        } else {
+            return None;
+        };
         if let Some(cwd) = build_task.cwd {
             config["cwd"] = cwd.into();
         }
@@ -237,8 +250,25 @@ fn request_kind(config: &Value) -> Result<StartDebuggingRequestArgumentsRequest>
 
 /// `haxe`, or a path to it (`/opt/haxe/haxe`, `haxe.exe`).
 fn is_haxe(command: &str) -> bool {
-    let name = command.rsplit(['/', '\\']).next().unwrap_or(command);
-    matches!(name, "haxe" | "haxe.exe" | "haxe.cmd")
+    matches!(file_name(command), "haxe" | "haxe.exe" | "haxe.cmd")
+}
+
+/// Lime's `lime`/`openfl` or `haxelib run lime|openfl` running `test`, `build` or `run`, or Ceramic's
+/// `ceramic <backend> run|build`: the bridge knows how to debug what they make.
+fn is_project_tool(command: &str, args: &[String]) -> bool {
+    let rest = match file_name(command).trim_end_matches(".exe").trim_end_matches(".cmd") {
+        "lime" | "openfl" => args,
+        "ceramic" if !args.is_empty() => &args[1..],
+        "haxelib" if args.len() > 1 && args[0] == "run" && matches!(args[1].as_str(), "lime" | "openfl") => {
+            &args[2..]
+        }
+        _ => return false,
+    };
+    matches!(rest.first().map(String::as_str), Some("test" | "build" | "run"))
+}
+
+fn file_name(path: &str) -> &str {
+    path.rsplit(['/', '\\']).next().unwrap_or(path)
 }
 
 /// Absolute path of `file` in the archive at `url`, unpacked into `{name}-{version}` on first use.

@@ -22,6 +22,13 @@
       },
       "description": "Haxe command-line arguments, instead of hxml."
     },
+    "command": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "A project tool's command that builds and runs the program, instead of hxml: Lime's (lime, openfl or haxelib run lime, with test, build or run and a target: desktop, hl or html5) or Ceramic's (ceramic <backend> run <target>: linux, mac, windows or web). The debugger runs a debug build of it. Any other command needs \"target\": \"hxcpp\" and must start a program built with -debug and hxcpp-debug-server. Without command, hxml, haxeArgs or program, a Lime or Ceramic project in the project folder is built with its own tool, for the target the Haxe language server uses."
+    },
     "program": {
       "type": "string",
       "description": "hxcpp: the program to run, relative to cwd. Without hxml or haxeArgs, a program already built (with -debug and hxcpp-debug-server), so nothing is built. Default: the executable the build makes. cppia: the host that runs the script, an hxcpp -debug build with -D scriptable and hxcpp-debug-server. HashLink: the .hl file to run. Default: the build's. JavaScript: the .js file to run. Default: the build's. Without hxml or haxeArgs, a program already built, with its source maps."
@@ -47,6 +54,18 @@
     "hl": {
       "type": "string",
       "description": "HashLink: the VM to run the program with. Default: hl on PATH."
+    },
+    "url": {
+      "type": "string",
+      "description": "JavaScript: open this page in a browser instead of running the program with Node, for a page served elsewhere. Without it but with webRoot, the debugger serves webRoot on localhost."
+    },
+    "webRoot": {
+      "type": "string",
+      "description": "JavaScript: the folder the page and its scripts are in, relative to cwd. Setting it opens the page in a browser instead of running the program with Node. Default with url: the program's folder."
+    },
+    "browser": {
+      "type": "string",
+      "description": "JavaScript in a browser: the Chrome, Chromium, Edge or Brave executable to use. Default: one of those on PATH, else an installed Chrome."
     },
     "runtimeExecutable": {
       "type": "string",

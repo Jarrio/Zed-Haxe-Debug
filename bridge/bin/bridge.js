@@ -251,11 +251,11 @@ class bridge_Build {
 			child.stdout.setEncoding("utf8");
 			child.stderr.setEncoding("utf8");
 			child.stdout.on("data",function(text) {
-				output(text);
+				output(bridge_Build.plain(text));
 			});
 			child.stderr.on("data",function(text) {
-				errors.push(text);
-				output(text);
+				errors.push(bridge_Build.plain(text));
+				output(bridge_Build.plain(text));
 			});
 			child.on("error",function(error) {
 				reject("Couldn't run " + run.executable + ": " + error.message);
@@ -293,6 +293,10 @@ class bridge_Build {
 			++_g;
 			child.kill();
 		}
+	}
+	static plain(text) {
+		let _this_r = new RegExp("\\x1b\\[[0-9;]*[A-Za-z]","g".split("u").join(""));
+		return text.replace(_this_r,"");
 	}
 	static environment(extra) {
 		let env = Reflect.copy(process.env);
@@ -479,6 +483,21 @@ class bridge_Planner {
 		}
 		let projectRoot = settings.root == null ? workspaceRoot : bridge_Planner.absolute(workspaceRoot,settings.root);
 		let cwd = config.cwd == null ? projectRoot : bridge_Planner.absolute(workspaceRoot,config.cwd);
+		let tmp = bridge_toolchain_Haxerc.find(projectRoot,workspaceRoot);
+		let toolchain = bridge_toolchain_Toolchain.resolve({ workspaceRoot : workspaceRoot, projectRoot : projectRoot, haxerc : tmp != null ? tmp.data : null, providerHaxePath : null, env : env},config.haxePath == null ? settings : { haxePath : config.haxePath});
+		let _g = 0;
+		let _g1 = toolchain.notes;
+		while(_g < _g1.length) {
+			let note = _g1[_g];
+			++_g;
+			bridge_Log.info(note);
+		}
+		let nothingNamed = config.command == null && config.hxml == null && config.haxeArgs == null && config.program == null;
+		let tmp1 = config.command;
+		let command = tmp1 != null ? tmp1 : nothingNamed ? bridge_Planner.toolCommand(projectRoot,settings) : null;
+		if(command != null) {
+			return bridge_Planner.planCommand(command,config,cwd,projectRoot,toolchain,adapters,env);
+		}
 		let prebuilt = config.program != null && config.haxeArgs == null && config.hxml == null;
 		let haxeArgs;
 		if(prebuilt) {
@@ -488,18 +507,9 @@ class bridge_Planner {
 			haxeArgs = tmp != null ? tmp : bridge_Planner.hxmlArgs(config.hxml == null ? bridge_Planner.defaultHxml(projectRoot,settings) : bridge_Planner.absolute(cwd,config.hxml),cwd);
 		}
 		let output = bridge_Planner.outputOf(bridge_project_Hxml.expand(haxeArgs,cwd));
-		let tmp = config.target;
-		let tmp1 = tmp != null ? tmp : output;
-		let target = tmp1 != null ? tmp1 : prebuilt ? bridge_Planner.prebuiltTarget(config.program) : "eval";
-		let tmp2 = bridge_toolchain_Haxerc.find(projectRoot,workspaceRoot);
-		let toolchain = bridge_toolchain_Toolchain.resolve({ workspaceRoot : workspaceRoot, projectRoot : projectRoot, haxerc : tmp2 != null ? tmp2.data : null, providerHaxePath : null, env : env},config.haxePath == null ? settings : { haxePath : config.haxePath});
-		let _g = 0;
-		let _g1 = toolchain.notes;
-		while(_g < _g1.length) {
-			let note = _g1[_g];
-			++_g;
-			bridge_Log.info(note);
-		}
+		let tmp2 = config.target;
+		let tmp3 = tmp2 != null ? tmp2 : output;
+		let target = tmp3 != null ? tmp3 : prebuilt ? bridge_Planner.prebuiltTarget(config.program) : "eval";
 		switch(target) {
 		case "cppia":
 			return { target : target, adapter : bridge_AdapterKind.OwnHxcpp, cwd : cwd, 'arguments' : bridge_targets_Hxcpp.cppia(config,haxeArgs,cwd,toolchain), filters : []};
@@ -512,11 +522,83 @@ class bridge_Planner {
 			return { target : target, adapter : bridge_AdapterKind.OwnHxcpp, cwd : cwd, 'arguments' : bridge_targets_Hxcpp.launch(config,haxeArgs,cwd,toolchain,adapters.hxcppDebugServer), filters : []};
 		case "js":
 			let launch1 = bridge_targets_JavaScript.launch(config,haxeArgs,cwd,projectRoot,toolchain,env);
-			return { target : target, adapter : bridge_AdapterKind.JsDebug(bridge_Planner.installed(adapters.jsDebug,"js-debug")), cwd : cwd, 'arguments' : launch1.arguments, filters : [], prelaunch : launch1.build == null ? null : bridge_targets_JavaScript.prelaunch(launch1.arguments,launch1.build)};
+			return { target : target, adapter : bridge_AdapterKind.JsDebug(bridge_Planner.installed(adapters.jsDebug,"js-debug")), cwd : cwd, 'arguments' : launch1.arguments, filters : [], prelaunch : launch1.arguments.type == "pwa-chrome" ? bridge_targets_JavaScript.browserPrelaunch(launch1.arguments,launch1.build,function() {
+				return Promise.resolve(launch1.arguments.webRoot);
+			}) : launch1.build == null ? null : bridge_targets_JavaScript.prelaunch(launch1.arguments,launch1.build)};
 		default:
 			let other = target;
 			throw new bridge_LaunchError("Debugging " + other + " builds isn't supported yet. To debug this build's macros, set \"target\": \"eval\".");
 		}
+	}
+	static toolCommand(projectRoot,settings) {
+		let provider = settings.provider;
+		let limeProject = provider == null || provider == "lime" ? bridge_targets_Lime.find(projectRoot) : null;
+		if(limeProject != null) {
+			let target = bridge_targets_Lime.isTarget(settings.target) ? settings.target : bridge_targets_Lime.hostTarget();
+			return ["haxelib","run","lime","test",limeProject,target];
+		}
+		if((provider == null || provider == "ceramic") && bridge_targets_Ceramic.find(projectRoot) != null) {
+			let tmp = settings.target;
+			let target = tmp != null ? tmp : "web";
+			let backend;
+			switch(target) {
+			case "node":
+				backend = "headless";
+				break;
+			case "unity":
+				backend = "unity";
+				break;
+			default:
+				backend = "clay";
+			}
+			return ["ceramic",backend,"run",target,"--setup","--assets"];
+		}
+		return null;
+	}
+	static planCommand(command,config,cwd,projectRoot,toolchain,adapters,env) {
+		let lime = bridge_targets_Lime.parse(command);
+		if(lime != null) {
+			let tmp = lime.target;
+			let target = bridge_targets_Lime.debugger(tmp != null ? tmp : bridge_targets_Lime.hostTarget());
+			switch(target) {
+			case "hl":
+				let launch = bridge_targets_Lime.hashlink(lime,config,cwd,toolchain,env);
+				return { target : target, adapter : bridge_AdapterKind.Node(bridge_Planner.installed(adapters.hashlink,"hashlink-debugger")), cwd : cwd, 'arguments' : launch.arguments, filters : [new bridge_dap_BodylessResponses()], prelaunch : launch.prelaunch};
+			case "html5":
+				let launch1 = bridge_targets_Lime.html5(lime,config,cwd,projectRoot,toolchain,env);
+				return { target : "js", adapter : bridge_AdapterKind.JsDebug(bridge_Planner.installed(adapters.jsDebug,"js-debug")), cwd : cwd, 'arguments' : launch1.arguments, filters : [], prelaunch : launch1.prelaunch};
+			case "hxcpp":
+				return { target : target, adapter : bridge_AdapterKind.OwnHxcpp, cwd : cwd, 'arguments' : bridge_targets_Lime.hxcpp(lime,config,cwd,toolchain,env,adapters.hxcppDebugServer), filters : []};
+			default:
+				let other = target;
+				throw new bridge_LaunchError("Debugging Lime's " + other + " target isn't supported yet. Desktop targets (linux, windows, mac), hl and html5 are.");
+			}
+		}
+		let ceramic = bridge_targets_Ceramic.parse(command);
+		if(ceramic != null) {
+			let project = bridge_targets_Ceramic.find(cwd);
+			let dir = project == null ? cwd : haxe_io_Path.directory(project);
+			let _g = bridge_targets_Ceramic.debugger(ceramic.target);
+			switch(_g) {
+			case "hxcpp":
+				let launch = bridge_targets_Ceramic.hxcpp(ceramic,config,dir,adapters.hxcppDebugServer);
+				return { target : "hxcpp", adapter : bridge_AdapterKind.OwnHxcpp, cwd : dir, 'arguments' : launch.arguments, filters : [], prelaunch : launch.prelaunch};
+			case "js":
+				let launch1 = bridge_targets_Ceramic.web(ceramic,config,dir,projectRoot,env);
+				return { target : "js", adapter : bridge_AdapterKind.JsDebug(bridge_Planner.installed(adapters.jsDebug,"js-debug")), cwd : dir, 'arguments' : launch1.arguments, filters : [], prelaunch : launch1.prelaunch};
+			default:
+				let other = _g;
+				throw new bridge_LaunchError("Debugging Ceramic's " + other + " target isn't supported yet. Desktop targets (linux, mac, windows) and web are.");
+			}
+		}
+		if(config.target == "hxcpp") {
+			let command1 = command[0];
+			let tmp = command.slice(1);
+			let tmp1 = bridge_targets_Lime.toolEnvironment(toolchain,env);
+			let tmp2 = config.port;
+			return { target : "hxcpp", adapter : bridge_AdapterKind.OwnHxcpp, cwd : cwd, 'arguments' : { build : null, program : command1, args : tmp, cwd : cwd, env : tmp1, port : tmp2 != null ? tmp2 : 6972, launcher : true}, filters : []};
+		}
+		throw new bridge_LaunchError("The debugger doesn't know what `" + command.join(" ") + "` builds. If it starts an hxcpp program built with -debug and hxcpp-debug-server, set \"target\": \"hxcpp\".");
 	}
 	static prebuiltTarget(program) {
 		switch(haxe_io_Path.extension(program)) {
@@ -1105,6 +1187,85 @@ class bridge_project_Hxml {
 	}
 }
 bridge_project_Hxml.__name__ = true;
+class bridge_targets_Ceramic {
+	static parse(command) {
+		if(command.length < 4 || haxe_io_Path.withoutExtension(haxe_io_Path.withoutDirectory(command[0])).toLowerCase() != "ceramic") {
+			return null;
+		}
+		let command1 = command[0];
+		let command2 = command[1];
+		let command3 = command[3];
+		let _g = [];
+		let _g1 = 0;
+		let _g2 = command.slice(4);
+		while(_g1 < _g2.length) {
+			let v = _g2[_g1];
+			++_g1;
+			if(!["--setup","--assets","--debug","--no-skip"].includes(v)) {
+				_g.push(v);
+			}
+		}
+		return { executable : command1, backend : command2, target : command3, flags : _g};
+	}
+	static find(dir) {
+		let found = bridge_util_Files.findByName(dir,["ceramic.yml"],2);
+		if(found.length > 0) {
+			return found[0];
+		} else {
+			return null;
+		}
+	}
+	static debugger(target) {
+		if(bridge_targets_Ceramic.native.includes(target)) {
+			return "hxcpp";
+		} else if(target == "web") {
+			return "js";
+		} else {
+			return target;
+		}
+	}
+	static web(command,config,dir,projectRoot,env) {
+		let build = { executable : command.executable, args : [command.backend,"build",command.target,"--setup","--assets","--debug"].concat(command.flags), cwd : dir, env : { }};
+		let $arguments = bridge_targets_JavaScript.browser(config,dir,projectRoot,env);
+		return { 'arguments' : $arguments, prelaunch : bridge_targets_JavaScript.browserPrelaunch($arguments,build,function() {
+			let js = bridge_project_HaxeArgs.output(bridge_project_Hxml.expand([bridge_targets_Ceramic.hxml(command,dir)],dir),["-js","--js"],dir);
+			if(js == null) {
+				return Promise.reject("Ceramic's " + bridge_targets_Ceramic.hxml(command,dir) + " has no -js output.");
+			} else {
+				return Promise.resolve(haxe_io_Path.directory(js));
+			}
+		})};
+	}
+	static hxcpp(command,config,dir,server) {
+		let project = bridge_targets_Ceramic.find(dir);
+		let ownServer = project != null && js_node_Fs.readFileSync(project,{ encoding : "utf8"}).indexOf("hxcpp-debug-server") >= 0;
+		if(!ownServer && server == null) {
+			throw new bridge_LaunchError("hxcpp-debug-server isn't installed, and the project doesn't use it.");
+		}
+		let setup = { executable : command.executable, args : [command.backend,"setup",command.target,"--debug"].concat(command.flags), cwd : dir, env : { }};
+		let command1 = command.executable;
+		let $arguments = [command.backend,"run",command.target,"--assets","--debug","--no-skip"].concat(command.flags);
+		let tmp = config.env;
+		let tmp1 = config.port;
+		let arguments1 = { build : null, program : command1, args : $arguments, cwd : dir, env : tmp != null ? tmp : { }, port : tmp1 != null ? tmp1 : ownServer ? 6972 : 0, launcher : true};
+		return { 'arguments' : arguments1, prelaunch : { build : setup, run : function(output) {
+			return bridge_Build.run(setup,output).then(function(_) {
+				if(!ownServer) {
+					let path = bridge_targets_Ceramic.hxml(command,dir);
+					if(!sys_FileSystem.exists(path)) {
+						return Promise.reject("Ceramic's setup didn't write " + path + ".");
+					}
+					js_node_Fs.writeFileSync(path,js_node_Fs.readFileSync(path,{ encoding : "utf8"}) + ("\n-cp " + server + "\n--macro hxcpp.debug.jsonrpc.Macro.injectServer()\n"));
+				}
+				return arguments1;
+			});
+		}}};
+	}
+	static hxml(command,dir) {
+		return haxe_io_Path.join([dir,"out",command.backend,"" + command.target + "-debug","project.hxml"]);
+	}
+}
+bridge_targets_Ceramic.__name__ = true;
 class bridge_targets_Eval {
 	static filters(toolchain) {
 		let filters = [new bridge_dap_BodylessResponses(),new bridge_targets_EvalThreads()];
@@ -1212,35 +1373,42 @@ class bridge_targets_HashLink {
 	}
 	static prelaunch($arguments,build) {
 		return { build : build, run : function(output) {
-			let dir = js_node_Fs.mkdtempSync(haxe_io_Path.join([js_node_Os.tmpdir(),"haxe-debug-"]));
-			let file = haxe_io_Path.join([dir,"classpaths.json"]);
-			sys_FileSystem.createDirectory(haxe_io_Path.join([dir,"zed","haxedebug"]));
-			js_node_Fs.writeFileSync(haxe_io_Path.join([dir,"zed","haxedebug","ClassPaths.hx"]),bridge_targets_HashLink.helperSource);
-			let cleanUp = function() {
-				require('fs').rmSync(dir, {recursive: true, force: true});
-			};
-			return bridge_Build.run(build,output,["-cp",dir,"--macro","" + bridge_targets_HashLink.helper + ".write(" + JSON.stringify(file) + ")"]).then(function(_) {
-				let paths = JSON.parse(js_node_Fs.readFileSync(file,{ encoding : "utf8"}));
-				cleanUp();
-				let _g = [];
-				let _g1 = 0;
-				while(_g1 < paths.length) {
-					let path = paths[_g1];
-					++_g1;
-					if(haxe_io_Path.normalize(path) != haxe_io_Path.normalize(dir)) {
-						_g.push(path);
-					}
-				}
-				$arguments.classPaths = _g;
+			return bridge_targets_HashLink.classPaths(build,output,function(dir,call) {
+				return ["-cp",dir,"--macro",call];
+			}).then(function(paths) {
+				$arguments.classPaths = paths;
 				if(!sys_FileSystem.exists($arguments.program)) {
 					return Promise.reject("The build didn't make " + $arguments.program + ". If it writes the program elsewhere, set \"program\" in the debug configuration.");
 				}
 				return $arguments;
-			},function(error) {
-				cleanUp();
-				return Promise.reject(error);
 			});
 		}};
+	}
+	static classPaths(build,output,flags) {
+		let dir = js_node_Fs.mkdtempSync(haxe_io_Path.join([js_node_Os.tmpdir(),"haxe-debug-"]));
+		let file = haxe_io_Path.join([dir,"classpaths.json"]);
+		sys_FileSystem.createDirectory(haxe_io_Path.join([dir,"zed","haxedebug"]));
+		js_node_Fs.writeFileSync(haxe_io_Path.join([dir,"zed","haxedebug","ClassPaths.hx"]),bridge_targets_HashLink.helperSource);
+		let cleanUp = function() {
+			require('fs').rmSync(dir, {recursive: true, force: true});
+		};
+		return bridge_Build.run(build,output,flags(dir,"" + bridge_targets_HashLink.helper + ".write(" + JSON.stringify(file) + ")")).then(function(_) {
+			let paths = JSON.parse(js_node_Fs.readFileSync(file,{ encoding : "utf8"}));
+			cleanUp();
+			let _g = [];
+			let _g1 = 0;
+			while(_g1 < paths.length) {
+				let path = paths[_g1];
+				++_g1;
+				if(haxe_io_Path.normalize(path) != haxe_io_Path.normalize(dir)) {
+					_g.push(path);
+				}
+			}
+			return _g;
+		},function(error) {
+			cleanUp();
+			return Promise.reject(error);
+		});
 	}
 }
 bridge_targets_HashLink.__name__ = true;
@@ -1477,7 +1645,7 @@ class bridge_targets_HxcppAdapter {
 			case "terminate":
 				this.respond(message);
 				if(this.program != null) {
-					this.program.kill();
+					bridge_util_ProcessTree.kill(this.program);
 				} else {
 					this.finish();
 				}
@@ -1529,17 +1697,16 @@ class bridge_targets_HxcppAdapter {
 		}
 		this.killed = true;
 		bridge_Build.stopAll();
-		let tmp = this.program;
-		if(tmp != null) {
-			tmp.kill();
+		if(this.program != null) {
+			bridge_util_ProcessTree.kill(this.program);
 		}
-		let tmp1 = this.server;
+		let tmp = this.server;
+		if(tmp != null) {
+			tmp.close();
+		}
+		let tmp1 = this.listener;
 		if(tmp1 != null) {
 			tmp1.close();
-		}
-		let tmp2 = this.listener;
-		if(tmp2 != null) {
-			tmp2.close();
 		}
 	}
 	launch(request,launch) {
@@ -1579,8 +1746,11 @@ class bridge_targets_HxcppAdapter {
 			return Promise.reject("The session ended.");
 		}
 		let name = haxe_io_Path.withoutDirectory(launch.program);
-		if(!sys_FileSystem.exists(launch.program)) {
-			return Promise.reject(launch.build == null ? "" + launch.program + " doesn't exist." : "The build didn't make " + launch.program + ". If it writes the program elsewhere, set \"program\" in the debug configuration.");
+		let launcher = launch.launcher == true;
+		let env = bridge_Build.environment(launch.env);
+		let start = launcher ? bridge_util_Exec.prepare(launch.program,launch.args,{ cwd : launch.cwd, env : env}) : { file : launch.program, args : launch.args, verbatim : false};
+		if(start == null || !launcher && !sys_FileSystem.exists(launch.program)) {
+			return Promise.reject(launcher ? "" + launch.program + " was not found." : launch.build == null ? "" + launch.program + " doesn't exist." : "The build didn't make " + launch.program + ". If it writes the program elsewhere, set \"program\" in the debug configuration.");
 		}
 		let _gthis = this;
 		return new Promise(function(resolve,reject) {
@@ -1591,16 +1761,18 @@ class bridge_targets_HxcppAdapter {
 			});
 			listener.listen(launch.port,"127.0.0.1",function() {
 				let port = listener.address().port;
-				let env = bridge_Build.environment(launch.env);
 				env["HXCPP_DEBUG_HOST"] = "127.0.0.1";
+				env["HXCPP_NO_COLOR"] = "1";
 				env["HXCPP_DEBUG_PORT"] = port == null ? "null" : "" + port;
 				let connected = false;
-				let timer = haxe_Timer.delay(function() {
+				let timer = launcher ? null : haxe_Timer.delay(function() {
 					reject("" + name + " didn't connect to the debugger within " + 30 + " seconds. Was it built with -debug and hxcpp-debug-server?");
 				},30000);
 				listener.once("connection",function(socket) {
 					connected = true;
-					timer.stop();
+					if(timer != null) {
+						timer.stop();
+					}
 					listener.close();
 					let server = new bridge_targets_HxcppServer(socket);
 					server.onNotification = $bind(_gthis,_gthis.notification);
@@ -1612,25 +1784,55 @@ class bridge_targets_HxcppAdapter {
 					_gthis.server = server;
 					resolve(null);
 				});
-				let child = js_node_ChildProcess.spawn(launch.program,launch.args,{ cwd : launch.cwd, env : env, windowsHide : true});
+				if(launcher) {
+					_gthis.output("console","Running: " + bridge_Build.commandLine(launch.program,launch.args) + "\n");
+				}
+				let child = bridge_util_ProcessTree.spawn(start.file,start.args,{ cwd : launch.cwd, env : env, windowsHide : true, windowsVerbatimArguments : start.verbatim});
 				_gthis.program = child;
+				let lastLines = [];
 				child.stdout.setEncoding("utf8");
 				child.stderr.setEncoding("utf8");
+				let show = function(category,text) {
+					let shown = launcher ? bridge_Build.plain(text) : text;
+					_gthis.output(launcher && !connected ? "console" : category,shown);
+					if(!connected) {
+						lastLines.push(shown);
+					}
+				};
 				child.stdout.on("data",function(text) {
-					_gthis.output("stdout",text);
+					show("stdout",text);
 				});
 				child.stderr.on("data",function(text) {
-					_gthis.output("stderr",text);
+					show("stderr",text);
 				});
 				child.on("error",function(error) {
-					timer.stop();
+					if(timer != null) {
+						timer.stop();
+					}
 					reject("Couldn't start " + launch.program + ": " + error.message);
 				});
 				child.on("close",function(code,signal) {
 					_gthis.program = null;
-					timer.stop();
+					if(timer != null) {
+						timer.stop();
+					}
 					if(!connected) {
-						reject("" + name + " exited (" + bridge_Build.exitStatus(code,signal) + ") before connecting to the debugger. Was it built with -debug and hxcpp-debug-server?");
+						if(launcher) {
+							let _g = [];
+							let _g1 = 0;
+							let _g2 = lastLines.join("").split("\n");
+							while(_g1 < _g2.length) {
+								let line = _g2[_g1];
+								++_g1;
+								if(StringTools.trim(line) != "") {
+									_g.push(StringTools.trim(line));
+								}
+							}
+							let lines = _g;
+							reject("" + bridge_Build.commandLine(launch.program,launch.args) + " ended (" + bridge_Build.exitStatus(code,signal) + ") without starting a program that connected to the debugger" + (lines.length > 0 ? ": " + lines.slice(-3).join("\n") : "."));
+						} else {
+							reject("" + name + " exited (" + bridge_Build.exitStatus(code,signal) + ") before connecting to the debugger. Was it built with -debug and hxcpp-debug-server?");
+						}
 						return;
 					}
 					let tmp = code;
@@ -1878,6 +2080,12 @@ class bridge_targets_JavaScript {
 	static launch(config,haxeArgs,cwd,projectRoot,toolchain,env) {
 		let args = haxeArgs.length == 0 ? null : bridge_project_HaxeArgs.withoutCommands(bridge_Planner.compilationFor(bridge_project_Hxml.expand(haxeArgs,cwd),"js"));
 		let program = config.program != null ? bridge_Planner.absolute(cwd,config.program) : bridge_project_HaxeArgs.output(args,["-js","--js"],cwd);
+		let build = args == null ? null : { executable : toolchain.path, args : args.concat(["-debug","-D","js-source-map"]), cwd : cwd, env : toolchain.env};
+		if(config.url != null || config.webRoot != null) {
+			let tmp = config.webRoot;
+			let webRoot = bridge_Planner.absolute(cwd,tmp != null ? tmp : haxe_io_Path.directory(program));
+			return { 'arguments' : bridge_targets_JavaScript.browser(config,webRoot,projectRoot,env), build : build};
+		}
 		let tmp = config.args;
 		let tmp1 = config.env;
 		let tmp2 = config.runtimeExecutable;
@@ -1885,7 +2093,69 @@ class bridge_targets_JavaScript {
 		let $arguments = tmp3 != null ? tmp3 : process.execPath;
 		let tmp4 = config.stopOnEntry;
 		let arguments1 = { type : "pwa-node", request : "launch", program : program, cwd : cwd, args : tmp != null ? tmp : [], env : tmp1 != null ? tmp1 : { }, console : "internalConsole", runtimeExecutable : $arguments, stopOnEntry : tmp4 != null && tmp4, sourceMaps : true, __workspaceFolder : projectRoot, pauseForSourceMap : false, outFiles : [haxe_io_Path.join([haxe_io_Path.directory(program),"**","*.js"])]};
-		return { 'arguments' : arguments1, build : args == null ? null : { executable : toolchain.path, args : args.concat(["-debug","-D","js-source-map"]), cwd : cwd, env : toolchain.env}};
+		return { 'arguments' : arguments1, build : build};
+	}
+	static browser(config,webRoot,projectRoot,env) {
+		let config1 = config.url;
+		let tmp = config.browser;
+		let tmp1 = tmp != null ? tmp : bridge_targets_JavaScript.findBrowser(env,projectRoot);
+		return { type : "pwa-chrome", request : "launch", url : config1, webRoot : webRoot, runtimeExecutable : tmp1 != null ? tmp1 : "stable", sourceMaps : true, __workspaceFolder : projectRoot, pauseForSourceMap : false, outFiles : [haxe_io_Path.join([webRoot,"**","*.js"])]};
+	}
+	static browserPrelaunch($arguments,build,webRoot) {
+		return { build : build, run : function(output) {
+			let built = build == null ? Promise.resolve(null) : bridge_Build.run(build,output);
+			return built.then(function(_) {
+				return webRoot();
+			}).then(function(root) {
+				$arguments.webRoot = root;
+				let tmp = haxe_io_Path.join([root,"**","*.js"]);
+				$arguments.outFiles = [tmp];
+				if($arguments.url != null) {
+					return Promise.resolve($arguments);
+				}
+				return bridge_util_StaticServer.start(root).then(function(url) {
+					output("Serving " + root + " at " + url + "\n");
+					$arguments.url = url;
+					return $arguments;
+				});
+			});
+		}};
+	}
+	static findBrowser(env,cwd) {
+		if(process.platform != "linux") {
+			return null;
+		}
+		let name = "google-chrome";
+		let path = bridge_util_Files.executable(name,env,cwd);
+		if(path != null) {
+			return path;
+		}
+		let name1 = "google-chrome-stable";
+		let path1 = bridge_util_Files.executable(name1,env,cwd);
+		if(path1 != null) {
+			return path1;
+		}
+		let name2 = "chromium";
+		let path2 = bridge_util_Files.executable(name2,env,cwd);
+		if(path2 != null) {
+			return path2;
+		}
+		let name3 = "chromium-browser";
+		let path3 = bridge_util_Files.executable(name3,env,cwd);
+		if(path3 != null) {
+			return path3;
+		}
+		let name4 = "microsoft-edge";
+		let path4 = bridge_util_Files.executable(name4,env,cwd);
+		if(path4 != null) {
+			return path4;
+		}
+		let name5 = "brave-browser";
+		let path5 = bridge_util_Files.executable(name5,env,cwd);
+		if(path5 != null) {
+			return path5;
+		}
+		return null;
 	}
 	static prelaunch($arguments,build) {
 		return { build : build, run : function(output) {
@@ -2209,6 +2479,210 @@ class bridge_targets_JsDebugAdapter {
 	}
 }
 bridge_targets_JsDebugAdapter.__name__ = true;
+class bridge_targets_Lime {
+	static parse(command) {
+		if(command.length == 0) {
+			return null;
+		}
+		let executable = haxe_io_Path.withoutExtension(haxe_io_Path.withoutDirectory(command[0])).toLowerCase();
+		let tool;
+		if(executable == "haxelib" && command[1] == "run" && (command[2] == "lime" || command[2] == "openfl")) {
+			tool = command.slice(0,3);
+		} else if(executable == "lime" || executable == "openfl") {
+			tool = [command[0]];
+		} else {
+			return null;
+		}
+		let rest = command.slice(tool.length);
+		let projectFile = null;
+		let target = null;
+		let flags = [];
+		let _g = 0;
+		let _g1 = rest.slice(1);
+		while(_g < _g1.length) {
+			let arg = _g1[_g];
+			++_g;
+			if(arg.startsWith("-")) {
+				flags.push(arg);
+			} else if(projectFile == null && target == null && new EReg("\\.(xml|hxp|lime)$","i").match(arg)) {
+				projectFile = arg;
+			} else if(target == null) {
+				target = arg;
+			} else {
+				flags.push(arg);
+			}
+		}
+		let tmp = rest[0];
+		return { tool : tool, action : tmp != null ? tmp : "test", projectFile : projectFile, target : target, flags : flags};
+	}
+	static find(dir) {
+		let found = bridge_util_Files.findByName(dir,bridge_targets_Lime.projectFiles,2);
+		if(found.length > 0) {
+			return found[0];
+		} else {
+			return null;
+		}
+	}
+	static hostTarget() {
+		switch(process.platform) {
+		case "darwin":
+			return "mac";
+		case "win32":
+			return "windows";
+		default:
+			return "linux";
+		}
+	}
+	static isTarget(name) {
+		if(name != null) {
+			if(!bridge_targets_Lime.native.includes(name)) {
+				return ["hl","html5","neko","android","ios","air","flash","electron"].includes(name);
+			} else {
+				return true;
+			}
+		} else {
+			return false;
+		}
+	}
+	static debugger(target) {
+		if(bridge_targets_Lime.native.includes(target)) {
+			return "hxcpp";
+		} else {
+			return target;
+		}
+	}
+	static hxcpp(command,config,cwd,toolchain,env,server) {
+		let projectFile = command.projectFile == null ? null : bridge_Planner.absolute(cwd,command.projectFile);
+		let dir = projectFile == null ? cwd : haxe_io_Path.directory(projectFile);
+		let tmp = projectFile;
+		let project = tmp != null ? tmp : bridge_targets_Lime.find(dir);
+		let ownServer = project != null && sys_FileSystem.exists(project) && js_node_Fs.readFileSync(project,{ encoding : "utf8"}).indexOf("hxcpp-debug-server") >= 0;
+		if(!ownServer && server == null) {
+			throw new bridge_LaunchError("hxcpp-debug-server isn't installed, and the project doesn't use it.");
+		}
+		let haxeFlags = ownServer ? [] : ["--haxeflag=-cp " + server,"--haxeflag=--macro hxcpp.debug.jsonrpc.Macro.injectServer()"];
+		let environment = bridge_targets_Lime.toolEnvironment(toolchain,env);
+		let tmp1 = config.env;
+		let access = tmp1 != null ? tmp1 : { };
+		let _g_access = access;
+		let _g_keys = Reflect.fields(access);
+		let _g_index = 0;
+		while(_g_index < _g_keys.length) {
+			let key = _g_keys[_g_index++];
+			let _g_value = _g_access[key];
+			let _g_key = key;
+			let name = _g_key;
+			let value = _g_value;
+			environment[name] = value;
+		}
+		let command1 = command.tool[0];
+		let tmp2 = bridge_targets_Lime.testArgs(command,projectFile).concat(haxeFlags);
+		let tmp3 = config.port;
+		return { build : null, program : command1, args : tmp2, cwd : dir, env : environment, port : tmp3 != null ? tmp3 : ownServer ? 6972 : 0, launcher : true};
+	}
+	static hashlink(command,config,cwd,toolchain,env) {
+		let projectFile = command.projectFile == null ? null : bridge_Planner.absolute(cwd,command.projectFile);
+		let dir = projectFile == null ? cwd : haxe_io_Path.directory(projectFile);
+		let environment = bridge_targets_Lime.toolEnvironment(toolchain,env);
+		let build = { executable : command.tool[0], args : bridge_targets_Lime.limeArgs(command,"build",projectFile), cwd : dir, env : environment};
+		let tmp = config.args;
+		let tmp1 = config.env;
+		let $arguments = { cwd : dir, program : "", hl : "", args : tmp != null ? tmp : [], env : tmp1 != null ? tmp1 : { }};
+		if(config.port != null) {
+			$arguments.port = config.port;
+		}
+		return { 'arguments' : $arguments, prelaunch : { build : build, run : function(output) {
+			let haxeFlags = function(dir,call) {
+				return ["--haxeflag=-cp " + dir,"--haxeflag=--macro " + call];
+			};
+			return bridge_targets_HashLink.classPaths(build,output,haxeFlags).then(function(paths) {
+				$arguments.classPaths = paths;
+				return bridge_targets_Lime.outputFile(command,projectFile,dir,environment);
+			}).then(function(vm) {
+				let arguments1 = $arguments;
+				arguments1.hl = vm;
+				arguments1.program = haxe_io_Path.join([haxe_io_Path.directory(vm),"hlboot.dat"]);
+				arguments1.cwd = haxe_io_Path.directory(vm);
+				return arguments1;
+			});
+		}}};
+	}
+	static html5(command,config,cwd,projectRoot,toolchain,env) {
+		let projectFile = command.projectFile == null ? null : bridge_Planner.absolute(cwd,command.projectFile);
+		let dir = projectFile == null ? cwd : haxe_io_Path.directory(projectFile);
+		let environment = bridge_targets_Lime.toolEnvironment(toolchain,env);
+		let build = { executable : command.tool[0], args : bridge_targets_Lime.limeArgs(command,"build",projectFile).concat(["--haxeflag=-D js-source-map"]), cwd : dir, env : environment};
+		let $arguments = bridge_targets_JavaScript.browser(config,dir,projectRoot,env);
+		return { 'arguments' : $arguments, prelaunch : bridge_targets_JavaScript.browserPrelaunch($arguments,build,function() {
+			return bridge_targets_Lime.outputFile(command,projectFile,dir,environment).then(haxe_io_Path.directory);
+		})};
+	}
+	static outputFile(command,projectFile,dir,environment) {
+		let display = [command.tool[0]].concat(bridge_targets_Lime.limeArgs(command,"display",projectFile)).concat(["--output-file"]);
+		return bridge_util_Exec.run(display,{ cwd : dir, env : bridge_Build.environment(environment)}).then(function(result) {
+			let _g = [];
+			let _g1 = 0;
+			let _g2 = result.stdout.split("\n");
+			while(_g1 < _g2.length) {
+				let line = _g2[_g1];
+				++_g1;
+				if(StringTools.trim(line) != "") {
+					_g.push(StringTools.trim(line));
+				}
+			}
+			let lines = _g;
+			let path = lines.length == 0 ? null : bridge_Planner.absolute(dir,lines[lines.length - 1]);
+			if(result.code != 0 || path == null || !sys_FileSystem.exists(path)) {
+				return Promise.reject("Lime didn't say where it put the program (lime display --output-file): " + result.stderr + result.stdout);
+			}
+			return path;
+		});
+	}
+	static testArgs(command,projectFile) {
+		return bridge_targets_Lime.limeArgs(command,"test",projectFile);
+	}
+	static limeArgs(command,action,projectFile) {
+		let args = command.tool.slice(1).concat([action]);
+		if(projectFile != null) {
+			args.push(projectFile);
+		}
+		if(command.target != null) {
+			args.push(command.target);
+		}
+		let _g = 0;
+		let _g1 = command.flags;
+		while(_g < _g1.length) {
+			let flag = _g1[_g];
+			++_g;
+			if(!["-debug","-release","-final","-nocolor"].includes(flag)) {
+				args.push(flag);
+			}
+		}
+		return args.concat(["-debug","-nocolor"]);
+	}
+	static toolEnvironment(toolchain,env) {
+		let result = Reflect.copy(toolchain.env);
+		if(haxe_io_Path.isAbsolute(toolchain.path)) {
+			let _g = [];
+			let _g1 = 0;
+			let _g2 = Reflect.fields(env);
+			while(_g1 < _g2.length) {
+				let key = _g2[_g1];
+				++_g1;
+				if(key.toUpperCase() == "PATH") {
+					_g.push(key);
+				}
+			}
+			let tmp = _g[0];
+			let name = tmp != null ? tmp : "PATH";
+			let separator = process.platform == "win32" ? ";" : ":";
+			let current = env[name];
+			result[name] = haxe_io_Path.directory(toolchain.path) + (current == null ? "" : separator + current);
+		}
+		return result;
+	}
+}
+bridge_targets_Lime.__name__ = true;
 class bridge_toolchain_Haxerc {
 	static find(projectRoot,workspaceRoot) {
 		let stop = haxe_io_Path.normalize(workspaceRoot);
@@ -2492,6 +2966,44 @@ class bridge_toolchain_Toolchain {
 }
 bridge_toolchain_Toolchain.__name__ = true;
 class bridge_util_Exec {
+	static run(command,options) {
+		let executable = bridge_util_Exec.alias(command[0],options.aliases);
+		let start = bridge_util_Exec.prepare(executable,command.slice(1),options);
+		if(start == null) {
+			return Promise.reject(new bridge_util_NotFound(executable));
+		}
+		return new Promise(function(resolve,reject) {
+			let child = js_node_ChildProcess.spawn(start.file,start.args,{ cwd : options.cwd, env : options.env, windowsHide : true, windowsVerbatimArguments : start.verbatim});
+			let stdout = [];
+			let stderr = [];
+			let tmp = options.timeout;
+			let timer = haxe_Timer.delay(function() {
+				child.kill();
+				let reject1 = reject;
+				let timer = "`" + command.join(" ") + "` did not finish within ";
+				let tmp = options.timeout;
+				reject1(timer + ((tmp != null ? tmp : 120000) / 1000 | 0) + " seconds");
+			},tmp != null ? tmp : 120000);
+			child.stdout.on("data",function(chunk) {
+				return stdout.push(chunk);
+			});
+			child.stderr.on("data",function(chunk) {
+				return stderr.push(chunk);
+			});
+			child.on("error",function(error) {
+				timer.stop();
+				if(error.code == "ENOENT") {
+					reject(new bridge_util_NotFound(executable));
+				} else {
+					reject(error);
+				}
+			});
+			child.on("close",function(code,_) {
+				timer.stop();
+				resolve({ code : code == null ? -1 : code, stdout : js_node_buffer_Buffer.concat(stdout).toString("utf8"), stderr : js_node_buffer_Buffer.concat(stderr).toString("utf8")});
+			});
+		});
+	}
 	static runSync(command,options) {
 		let start = bridge_util_Exec.prepare(bridge_util_Exec.alias(command[0],options.aliases),command.slice(1),options);
 		if(start == null) {
@@ -2559,7 +3071,26 @@ class bridge_util_Exec {
 	}
 }
 bridge_util_Exec.__name__ = true;
+class bridge_util_NotFound {
+	constructor(executable) {
+		this.executable = executable;
+	}
+}
+bridge_util_NotFound.__name__ = true;
 class bridge_util_Files {
+	static findByName(root,names,maxDepth) {
+		let _this = bridge_util_Files.find(root,maxDepth,function(file) {
+			return names.includes(file);
+		});
+		let result = new Array(_this.length);
+		let _g = 0;
+		let _g1 = _this.length;
+		while(_g < _g1) {
+			let i = _g++;
+			result[i] = _this[i].path;
+		}
+		return result;
+	}
 	static findByExtension(root,extension,maxDepth) {
 		return bridge_util_Files.find(root,maxDepth,function(file) {
 			return file.endsWith(extension);
@@ -2715,6 +3246,67 @@ class bridge_util_Files {
 	}
 }
 bridge_util_Files.__name__ = true;
+class bridge_util_ProcessTree {
+	static spawn(file,args,options) {
+		if(process.platform != "win32") {
+			options.detached = true;
+		}
+		return js_node_ChildProcess.spawn(file,args,options);
+	}
+	static kill(child) {
+		let pid = child.pid;
+		if(pid == null) {
+			return;
+		}
+		if(process.platform == "win32") {
+			js_node_ChildProcess.spawn("taskkill",["/pid",pid == null ? "null" : "" + pid,"/T","/F"],{ windowsHide : true, stdio : "ignore"});
+			return;
+		}
+		try {
+			process.kill(-pid,"SIGTERM");
+		} catch( _g ) {
+			child.kill();
+		}
+	}
+}
+bridge_util_ProcessTree.__name__ = true;
+class bridge_util_StaticServer {
+	static start(root) {
+		return new Promise(function(resolve,reject) {
+			let server = js_node_Http.createServer(function(request,response) {
+				let s = request.url.split("?")[0];
+				let relative = decodeURIComponent(s.split("+").join(" "));
+				let path = haxe_io_Path.normalize(haxe_io_Path.join([root,relative]));
+				let start = haxe_io_Path.normalize(root);
+				if(!path.startsWith(start)) {
+					response.writeHead(403);
+					response.end();
+					return;
+				}
+				if(relative.endsWith("/")) {
+					path = haxe_io_Path.join([path,"index.html"]);
+				}
+				js_node_Fs.readFile(path,function(error,data) {
+					if(error != null) {
+						response.writeHead(404);
+						response.end();
+						return;
+					}
+					let response1 = response;
+					let key = haxe_io_Path.extension(path).toLowerCase();
+					let tmp = bridge_util_StaticServer.types.h[key];
+					response1.writeHead(200,{ "Content-Type" : tmp != null ? tmp : "application/octet-stream"});
+					response.end(data);
+				});
+			});
+			server.on("error",reject);
+			server.listen(0,"127.0.0.1",function() {
+				resolve("http://127.0.0.1:" + server.address().port + "/");
+			});
+		});
+	}
+}
+bridge_util_StaticServer.__name__ = true;
 class bridge_util_Vars {
 	static expand(text,values) {
 		return bridge_util_Vars.placeholder.map(text,function(re) {
@@ -3022,6 +3614,11 @@ class haxe_io_Path {
 	toString() {
 		return (this.dir == null ? "" : this.dir + (this.backslash ? "\\" : "/")) + this.file + (this.ext == null ? "" : "." + this.ext);
 	}
+	static withoutExtension(path) {
+		let s = new haxe_io_Path(path);
+		s.ext = null;
+		return s.toString();
+	}
 	static withoutDirectory(path) {
 		let s = new haxe_io_Path(path);
 		s.dir = null;
@@ -3278,6 +3875,7 @@ class js_Boot {
 js_Boot.__name__ = true;
 var js_node_ChildProcess = require("child_process");
 var js_node_Fs = require("fs");
+var js_node_Http = require("http");
 var js_node_Net = require("net");
 var js_node_Os = require("os");
 var js_node_Path = require("path");
@@ -3363,12 +3961,41 @@ bridge_Build.stopped = false;
 bridge_Planner.supported = ["eval","hxcpp","cppia","hl","js"];
 bridge_dap_BodylessResponses.commands = ["attach","launch","configurationDone","disconnect","terminate","restart","next","stepIn","stepOut","stepBack","reverseContinue","restartFrame","goto","pause","terminateThreads","cancel"];
 bridge_dap_Connection.contentLength = new EReg("Content-Length:\\s*(\\d+)","i");
+bridge_targets_Ceramic.native = ["linux","mac","windows"];
 bridge_targets_HashLink.helper = "zed.haxedebug.ClassPaths";
 bridge_targets_HashLink.helperSource = "package zed.haxedebug;\n\n// Written by the Haxe debugger for Zed, for the duration of one build.\nclass ClassPaths {\n\tpublic static function write(file:String) {\n\t\tvar paths = [for (path in haxe.macro.Context.getClassPath()) sys.FileSystem.absolutePath(path == \"\" ? \".\" : path)];\n\t\tsys.io.File.saveContent(file, haxe.Json.stringify(paths));\n\t}\n}\n";
+bridge_targets_Lime.projectFiles = ["project.xml","Project.xml","project.hxp","project.lime"];
+bridge_targets_Lime.native = ["linux","windows","mac","macos","cpp"];
 bridge_toolchain_Toolchain.defaultOrder = ["provider","lix","haxe-manager","path"];
 bridge_util_Exec.isWindows = process.platform == "win32";
 bridge_util_Files.isWindows = process.platform == "win32";
 bridge_util_Files.ignoredFolders = [".git",".haxelib",".zed","node_modules","haxe_libraries","haxe_modules","Export","export","bin","dump","out"];
+bridge_util_StaticServer.types = (function($this) {
+	var $r;
+	let _g = new haxe_ds_StringMap();
+	_g.h["html"] = "text/html";
+	_g.h["js"] = "text/javascript";
+	_g.h["mjs"] = "text/javascript";
+	_g.h["css"] = "text/css";
+	_g.h["json"] = "application/json";
+	_g.h["map"] = "application/json";
+	_g.h["png"] = "image/png";
+	_g.h["jpg"] = "image/jpeg";
+	_g.h["jpeg"] = "image/jpeg";
+	_g.h["gif"] = "image/gif";
+	_g.h["svg"] = "image/svg+xml";
+	_g.h["wasm"] = "application/wasm";
+	_g.h["ogg"] = "audio/ogg";
+	_g.h["mp3"] = "audio/mpeg";
+	_g.h["wav"] = "audio/wav";
+	_g.h["ttf"] = "font/ttf";
+	_g.h["otf"] = "font/otf";
+	_g.h["woff"] = "font/woff";
+	_g.h["woff2"] = "font/woff2";
+	_g.h["txt"] = "text/plain";
+	$r = _g;
+	return $r;
+}(this));
 bridge_util_Vars.placeholder = new EReg("\\$\\{([A-Za-z]+)\\}","g");
 bridge_util_Vars.wholePlaceholder = new EReg("^\\$\\{([A-Za-z]+)\\}$","");
 bridge_Main.main();

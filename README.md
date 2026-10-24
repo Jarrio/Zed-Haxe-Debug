@@ -8,11 +8,14 @@ Breakpoints, stepping, variables and the debug console for Haxe in Zed.
 | hxcpp (`--cpp`) | [hxcpp-debug-server](https://github.com/Jarrio/hxcpp-debugger) | works |
 | cppia (`--cppia`), in a host built for debugging | hxcpp-debug-server | works with libhxcpp (see "cppia") |
 | HashLink (`--hl`) | [hashlink-debugger](https://github.com/vshaxe/hashlink-debugger) | works |
-| JavaScript (`--js`), run by Node | [js-debug](https://github.com/microsoft/vscode-js-debug), as in Zed's own JavaScript support | works, with breakpoints in the Haxe code |
+| JavaScript (`--js`), run by Node or in a browser | [js-debug](https://github.com/microsoft/vscode-js-debug), as in Zed's own JavaScript support | works, with breakpoints in the Haxe code |
+| Lime, OpenFL and Flixel projects: desktop, `hl` and `html5` targets | the target's debugger, above | works |
+| Ceramic projects: `web` and desktop targets | the target's debugger, above | `web` works; desktop builds, but hasn't been seen to stop yet (see "Ceramic") |
 
 Between Zed and the debuggers sits a **bridge written in Haxe** (`bridge/`), which:
 
-- picks the hxml to debug and the debugger its output needs
+- picks the hxml to debug and the debugger its output needs, or for a Lime or Ceramic project, builds
+  it with the project's own tool
 - picks the Haxe to run, the same way [Zed-Haxe](https://github.com/Jarrio/Zed-Haxe) does: `.haxerc`
   through lix or haxe-manager, else `haxe` on your PATH
 - for eval, runs vshaxe's eval-debugger, the one VS Code uses, unmodified, and works around the places
@@ -50,7 +53,8 @@ this to your Zed settings:
 ## Debugging
 
 Open the debugger (F4 by default). Zed-Haxe's `haxe: <file>.hxml` tasks are listed there, ready to
-debug. Or describe a session in `.zed/debug.json`:
+debug, and so are its Lime and Ceramic tasks. A Lime or Ceramic project needs no configuration at all:
+see "Lime, OpenFL and Flixel" and "Ceramic". Or describe a session in `.zed/debug.json`:
 
 ```json
 [
@@ -67,6 +71,7 @@ debug. Or describe a session in `.zed/debug.json`:
 |---|---|
 | `hxml` | The hxml to build, relative to `cwd`. |
 | `haxeArgs` | Haxe arguments, instead of `hxml`. |
+| `command` | A Lime or Ceramic command that builds and runs the program, instead of `hxml`, such as `["lime", "test", "linux"]` (see "Lime, OpenFL and Flixel" and "Ceramic"). |
 | `target` | `"eval"`, `"hxcpp"`, `"cppia"`, `"hl"` or `"js"`. Without it, the build's output decides: `--interp` and `--run` use eval, `--cpp` hxcpp, `--cppia` cppia, `--hl` HashLink, `--js` JavaScript. `"eval"` on a build for another target debugs its macros and writes no output. |
 | `cwd` | Folder to run Haxe and the program in. Default: the project folder. |
 | `program` | hxcpp: the program to run. Without `hxml` and `haxeArgs`, nothing is built, so it must already be a `-debug` build with `-lib hxcpp-debug-server`. cppia: the host (see "cppia"). HashLink: the `.hl` file, if not the build's. JavaScript: the `.js` file, if not the build's; without `hxml` and `haxeArgs`, one already built, with its source maps. |
@@ -74,12 +79,14 @@ debug. Or describe a session in `.zed/debug.json`:
 | `port` | hxcpp and cppia: the port the program's debug server connects to (see "hxcpp" below). HashLink: the port the debugger talks to the VM on (default 6112). |
 | `hl` | HashLink: the VM to run the program with. Default: `hl` on your PATH. |
 | `runtimeExecutable` | JavaScript: the Node to run the program with. Default: `node` on your PATH, else the one Zed runs. |
+| `webRoot`, `url`, `browser` | JavaScript: run the program in a browser instead of Node (see "JavaScript in a browser"). |
 | `stopOnEntry` | eval and JavaScript: pause before the first line runs. |
 | `haxePath` | Haxe executable to use. |
 | `mergeScopes`, `showGeneratedVariables` | eval-debugger's own options, as in VS Code. |
 
-Without `hxml`, `haxeArgs` and `program`, the debugger uses the hxml Zed-Haxe has selected, else one that
-runs with `--interp` or `--run`, else the only one. Zed-Haxe's `project` settings (`haxePath`,
+Without `command`, `hxml`, `haxeArgs` and `program`, the debugger builds a Lime or Ceramic project in the
+project folder with its own tool. Otherwise it uses the hxml Zed-Haxe has selected, else one that runs
+with `--interp` or `--run`, else the only one. Zed-Haxe's `project` settings (`haxePath`,
 `haxeResolvers`, `root`, `target` under `lsp.haxe-language-server.settings`) apply here too. Of an hxml
 with several compilations (`--next`), the first that a debugger here supports is the one debugged.
 
@@ -156,9 +163,83 @@ js-debug runs the program in a session of its own, which it asks the editor to o
 it itself, so Zed shows one session, as for the other targets.
 
 Tested with Haxe 4.0.5, 4.1.5, 4.2.5, 4.3.7, the 5.0.0 preview and the nightly of October 2026.
-Browser JavaScript isn't supported yet; Zed's own
-JavaScript adapter can debug it, given `"pauseForSourceMap": false` and
-`"__workspaceFolder": "$ZED_WORKTREE_ROOT"`, without which breakpoints in `.hx` files don't take effect.
+
+### JavaScript in a browser
+
+Set `webRoot` to the folder the page is in, and the bridge serves it on localhost after the build and
+opens it in a browser under js-debug. `url` opens a page served elsewhere instead:
+
+```json
+{
+  "label": "Debug in the browser",
+  "adapter": "Haxe",
+  "request": "launch",
+  "hxml": "build.hxml",
+  "webRoot": "bin"
+}
+```
+
+The browser is Chrome, Chromium, Edge or Brave: the one `browser` names, else the first of those on
+your PATH, else an installed Chrome. It opens with a profile of its own, so it doesn't touch your usual
+one. Breakpoints, stepping and the console work as with Node.
+
+### Lime, OpenFL and Flixel
+
+In a folder with a Lime project file (`project.xml`, `Project.xml`, `project.hxp` or `project.lime`,
+here or up to two folders below), the debugger builds and runs the project with Lime, for the target
+Zed-Haxe's `target` setting names, else for this desktop. The project's libraries, defines and assets
+are Lime's business, as in any build. To pick the target in `.zed/debug.json`, give the Lime command:
+
+```json
+{
+  "label": "Debug on HashLink",
+  "adapter": "Haxe",
+  "request": "launch",
+  "command": ["lime", "test", "hl"]
+}
+```
+
+`lime`, `openfl` and `haxelib run lime` all work, with `test`, `build` or `run`; the bridge runs its own
+debug build whichever it is, keeping the command's other flags but not `-release` or `-final`.
+
+- Desktop targets (`linux`, `windows`, `mac`): `lime test <target> -debug`, with hxcpp-debug-server
+  added through `--haxeflag` unless the project file includes it already. Lime starts the program,
+  which connects back to the debugger. Stopping the session stops Lime and the program.
+- `hl`: `lime build hl -debug`, then the HashLink VM Lime ships with the program runs it, so no `hl`
+  needs to be installed.
+- `html5`: `lime build html5 -debug` with source maps, then the output folder is served and opened in a
+  browser, as in "JavaScript in a browser".
+
+Lime runs `haxe` from your PATH, so the bridge puts the Haxe it picked first on the PATH it gives Lime.
+Tested with Lime 8.2.3, OpenFL 9.3.4 and Flixel 6.1.0 on Haxe 4.3.7. They don't build with the Haxe 5
+preview.
+
+### Ceramic
+
+In a folder with a `ceramic.yml`, the debugger builds and runs the project with Ceramic, for the target
+Zed-Haxe's `target` setting names, else `web`. Ceramic builds with its own Haxe, so `haxePath` and
+`.haxerc` don't apply. To pick the target, give the Ceramic command:
+
+```json
+{
+  "label": "Debug on Linux",
+  "adapter": "Haxe",
+  "request": "launch",
+  "command": ["ceramic", "clay", "run", "linux"]
+}
+```
+
+- `web`: `ceramic <backend> build web --setup --assets --debug`, then the folder the build writes the
+  page to is served and opened in a browser, as in "JavaScript in a browser".
+- Desktop targets (`linux`, `mac`, `windows`): Ceramic has no way to add Haxe arguments from its
+  command line, so the bridge runs `ceramic <backend> setup <target> --debug`, adds hxcpp-debug-server
+  to the `project.hxml` that writes under `out/`, then runs
+  `ceramic <backend> run <target> --assets --debug --no-skip`. The next setup without the debugger
+  writes the file afresh.
+
+Tested with Ceramic's tools 2.1.0. `web` stops at breakpoints. On Linux, the desktop build gets as far as
+compiling the debug server into the program; the machine it was tested on lacked the GLU headers
+Ceramic's C++ needs, so it hasn't been seen to stop at a breakpoint yet.
 
 ## Known issues
 
@@ -187,6 +268,7 @@ JavaScript adapter can debug it, given `"pauseForSourceMap": false` and
   - static extensions through `using`, and `cast`
   - functions that dead code elimination removed ("Null Function Pointer")
   - string interpolation (`'$name'` comes back as the text `$name`)
+  - classes by their short name: `flixel.FlxG.width` works, `FlxG.width` doesn't
 
   A field that doesn't exist reads as `null`.
 - hxcpp can change only the local variables of the innermost frame, and stepping always steps the main
@@ -211,7 +293,12 @@ run `node bridge.js`. The bridge reads the debug configuration and picks the deb
 - HashLink: it builds the program, asking Haxe for the class paths with a small macro on the way
   (`targets/HashLink.hx`), then starts hashlink-debugger and relays DAP messages as for eval.
 - JavaScript: it builds the program, starts js-debug's server, and relays DAP messages over TCP,
-  opening the program's session itself (`targets/JsDebugAdapter.hx`).
+  opening the program's session itself (`targets/JsDebugAdapter.hx`). For a page, it serves the folder
+  itself (`util/StaticServer.hx`).
+- Lime and Ceramic: it runs the project's tool for a debug build with the debugger's pieces added, then
+  debugs the result as one of the targets above (`targets/Lime.hx`, `targets/Ceramic.hx`). When the tool
+  also starts the program, as `lime test` does, the program connects back to the debugger, and stopping
+  the session stops the tool and everything it started.
 
 ## Development
 

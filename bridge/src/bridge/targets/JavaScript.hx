@@ -6,6 +6,7 @@ import bridge.project.HaxeArgs;
 import bridge.project.Hxml;
 import bridge.toolchain.Toolchain.ResolvedToolchain;
 import bridge.util.Files;
+import bridge.util.StaticServer;
 import haxe.DynamicAccess;
 import haxe.io.Path;
 import js.Node.process;
@@ -27,6 +28,17 @@ class JavaScript {
 		// A program named without a build is run as it is, with whatever source maps it was built with.
 		final args = haxeArgs.length == 0 ? null : HaxeArgs.withoutCommands(Planner.compilationFor(Hxml.expand(haxeArgs, cwd), "js"));
 		final program = config.program != null ? Planner.absolute(cwd, config.program) : HaxeArgs.output(args, ["-js", "--js"], cwd);
+		final build:Null<HaxeRun> = args == null ? null : {
+			executable: toolchain.path,
+			args: args.concat(["-debug", "-D", "js-source-map"]),
+			cwd: cwd,
+			env: toolchain.env
+		};
+		if (config.url != null || config.webRoot != null) {
+			// A page: the folder it's in, served unless there's a URL.
+			final webRoot = Planner.absolute(cwd, config.webRoot ?? Path.directory(program));
+			return {arguments: browser(config, webRoot, projectRoot, env), build: build};
+		}
 		final arguments:Dynamic = {
 			type: "pwa-node",
 			request: "launch",
@@ -45,10 +57,65 @@ class JavaScript {
 			pauseForSourceMap: false,
 			outFiles: [Path.join([Path.directory(program), "**", "*.js"])]
 		};
+		return {arguments: arguments, build: build};
+	}
+
+	/**
+		js-debug's arguments for a page in Chrome, Chromium or Edge (its `pwa-chrome` type). `url` is filled
+		in by `browserPrelaunch` when the bridge serves `webRoot` itself.
+	**/
+	public static function browser(config:LaunchConfig, webRoot:String, projectRoot:String, env:DynamicAccess<String>):Dynamic {
 		return {
-			arguments: arguments,
-			build: args == null ? null : {executable: toolchain.path, args: args.concat(["-debug", "-D", "js-source-map"]), cwd: cwd, env: toolchain.env}
+			type: "pwa-chrome",
+			request: "launch",
+			url: config.url,
+			webRoot: webRoot,
+			runtimeExecutable: config.browser ?? findBrowser(env, projectRoot) ?? "stable",
+			sourceMaps: true,
+			// As for Node (see `launch`).
+			__workspaceFolder: projectRoot,
+			pauseForSourceMap: false,
+			outFiles: [Path.join([webRoot, "**", "*.js"])]
 		};
+	}
+
+	/**
+		Runs `build` if there is one, finds the folder to serve with `webRoot` (which may need the build to
+		have run), serves it unless the configuration gave a URL, and resolves with the `launch` arguments.
+	**/
+	public static function browserPrelaunch(arguments:Dynamic, build:Null<HaxeRun>, webRoot:Void->Promise<String>):Prelaunch {
+		return {
+			build: build,
+			run: function(output) {
+				final built:Promise<Any> = build == null ? Promise.resolve(null) : Build.run(build, output);
+				return built.then(_ -> webRoot()).then(function(root):Promise<Dynamic> {
+					arguments.webRoot = root;
+					arguments.outFiles = [Path.join([root, "**", "*.js"])];
+					if (arguments.url != null) {
+						return Promise.resolve(arguments);
+					}
+					return StaticServer.start(root).then(function(url):Dynamic {
+						output('Serving $root at $url\n');
+						arguments.url = url;
+						return arguments;
+					});
+				});
+			}
+		};
+	}
+
+	/** Chrome, Chromium, Edge or Brave on PATH; elsewhere js-debug finds an installed Chrome itself ("stable"). **/
+	static function findBrowser(env:DynamicAccess<String>, cwd:String):Null<String> {
+		if (process.platform != "linux") {
+			return null;
+		}
+		for (name in ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "microsoft-edge", "brave-browser"]) {
+			final path = Files.executable(name, env, cwd);
+			if (path != null) {
+				return path;
+			}
+		}
+		return null;
 	}
 
 	/** Builds, then resolves with the `launch` arguments once the program is there. **/

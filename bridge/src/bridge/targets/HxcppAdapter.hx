@@ -4,6 +4,8 @@ import bridge.Build;
 import bridge.dap.Adapter;
 import bridge.dap.Message;
 import bridge.targets.Hxcpp;
+import bridge.util.Exec;
+import bridge.util.ProcessTree;
 import haxe.io.Path;
 import js.Node.process;
 import js.lib.Promise;
@@ -19,6 +21,7 @@ import sys.FileSystem;
 	keeps the program paused until Zed has sent the breakpoints (`configurationDone`), gives each session
 	its own port, and stops the program when the session ends.
 **/
+@:access(bridge.util.Exec)
 class HxcppAdapter implements Adapter {
 	public var onMessage:Message->Void = _ -> {};
 	public var onClose:Int->Void = _ -> {};
@@ -163,7 +166,7 @@ class HxcppAdapter implements Adapter {
 			case "terminate":
 				respond(message);
 				if (program != null) {
-					program.kill();
+					ProcessTree.kill(program);
 				} else {
 					finish();
 				}
@@ -182,7 +185,9 @@ class HxcppAdapter implements Adapter {
 		}
 		killed = true;
 		Build.stopAll();
-		program?.kill();
+		if (program != null) {
+			ProcessTree.kill(program);
+		}
 		server?.close();
 		listener?.close();
 	}
@@ -213,8 +218,12 @@ class HxcppAdapter implements Adapter {
 			return Promise.reject("The session ended.");
 		}
 		final name = Path.withoutDirectory(launch.program);
-		if (!FileSystem.exists(launch.program)) {
-			return Promise.reject(launch.build == null ? '${launch.program} doesn\'t exist.' : 'The build didn\'t make ${launch.program}. If it writes the program elsewhere, set "program" in the debug configuration.');
+		final launcher = launch.launcher == true;
+		final env = Build.environment(launch.env);
+		// A launcher, such as `haxelib run lime test`, is found on PATH, through cmd.exe for a .cmd on Windows.
+		final start = launcher ? Exec.prepare(launch.program, launch.args, {cwd: launch.cwd, env: env}) : {file: launch.program, args: launch.args, verbatim: false};
+		if (start == null || (!launcher && !FileSystem.exists(launch.program))) {
+			return Promise.reject(launcher ? '${launch.program} was not found.' : launch.build == null ? '${launch.program} doesn\'t exist.' : 'The build didn\'t make ${launch.program}. If it writes the program elsewhere, set "program" in the debug configuration.');
 		}
 		return new Promise(function(resolve, reject) {
 			final listener = Net.createServer();
@@ -222,16 +231,17 @@ class HxcppAdapter implements Adapter {
 			listener.on("error", (error:js.lib.Error) -> reject('Couldn\'t wait for the program on port ${launch.port}: ${error.message}'));
 			listener.listen(launch.port, "127.0.0.1", function() {
 				final port:Int = (cast listener.address()).port;
-				final env = Build.environment(launch.env);
 				env.set("HXCPP_DEBUG_HOST", "127.0.0.1");
+				env.set("HXCPP_NO_COLOR", "1");
 				env.set("HXCPP_DEBUG_PORT", Std.string(port));
 				var connected = false;
-				final timer = haxe.Timer.delay(function() {
+				// A launcher builds first, which can take minutes: it has as long as it runs.
+				final timer = launcher ? null : haxe.Timer.delay(function() {
 					reject('$name didn\'t connect to the debugger within $connectSeconds seconds. Was it built with -debug and hxcpp-debug-server?');
 				}, connectSeconds * 1000);
 				listener.once("connection", function(socket:js.node.net.Socket) {
 					connected = true;
-					timer.stop();
+					timer?.stop();
 					listener.close();
 					final server = new HxcppServer(socket);
 					server.onNotification = notification;
@@ -244,21 +254,43 @@ class HxcppAdapter implements Adapter {
 					this.server = server;
 					resolve(null);
 				});
-				final child = ChildProcess.spawn(launch.program, launch.args, cast {cwd: launch.cwd, env: env, windowsHide: true});
+				if (launcher) {
+					output("console", 'Running: ${Build.commandLine(launch.program, launch.args)}\n');
+				}
+				final child = ProcessTree.spawn(start.file, start.args, {
+					cwd: launch.cwd,
+					env: env,
+					windowsHide: true,
+					windowsVerbatimArguments: start.verbatim
+				});
 				program = child;
+				final lastLines = [];
 				child.stdout.setEncoding("utf8");
 				child.stderr.setEncoding("utf8");
-				child.stdout.on("data", (text:String) -> output("stdout", text));
-				child.stderr.on("data", (text:String) -> output("stderr", text));
+				function show(category:String, text:String) {
+					// Until the program connects, a launcher's output is its build's.
+					final shown = launcher ? Build.plain(text) : text;
+					output(launcher && !connected ? "console" : category, shown);
+					if (!connected) {
+						lastLines.push(shown);
+					}
+				}
+				child.stdout.on("data", (text:String) -> show("stdout", text));
+				child.stderr.on("data", (text:String) -> show("stderr", text));
 				child.on("error", function(error:js.lib.Error) {
-					timer.stop();
+					timer?.stop();
 					reject('Couldn\'t start ${launch.program}: ${error.message}');
 				});
 				child.on("close", function(code:Null<Int>, signal:Null<String>) {
 					program = null;
-					timer.stop();
+					timer?.stop();
 					if (!connected) {
-						reject('$name exited (${Build.exitStatus(code, signal)}) before connecting to the debugger. Was it built with -debug and hxcpp-debug-server?');
+						if (launcher) {
+							final lines = [for (line in lastLines.join("").split("\n")) if (StringTools.trim(line) != "") StringTools.trim(line)];
+							reject('${Build.commandLine(launch.program, launch.args)} ended (${Build.exitStatus(code, signal)}) without starting a program that connected to the debugger${lines.length > 0 ? ": " + lines.slice(-3).join("\n") : "."}');
+						} else {
+							reject('$name exited (${Build.exitStatus(code, signal)}) before connecting to the debugger. Was it built with -debug and hxcpp-debug-server?');
+						}
 						return;
 					}
 					event("exited", {exitCode: code ?? 1});
