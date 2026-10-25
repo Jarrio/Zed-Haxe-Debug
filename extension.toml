@@ -1,6 +1,6 @@
 id = "haxe-debug"
 name = "Haxe Debugger"
-version = "0.1.0"
+version = "0.1.1"
 schema_version = 1
 authors = ["Jarrio"]
 description = "Debug Haxe in Zed: eval (--interp and macros), hxcpp, cppia, HashLink and JavaScript, and Lime, OpenFL, Flixel and Ceramic projects."
