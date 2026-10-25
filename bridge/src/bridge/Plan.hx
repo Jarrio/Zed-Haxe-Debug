@@ -10,6 +10,7 @@ import bridge.targets.Ceramic;
 import bridge.targets.Eval;
 import bridge.targets.HashLink;
 import bridge.targets.HashLinkOutput;
+import bridge.targets.HashLinkSignal;
 import bridge.targets.JavaScript;
 import bridge.targets.Lime;
 import bridge.targets.Hxcpp;
@@ -170,7 +171,7 @@ class Planner {
 					adapter: Node(installed(adapters.hashlink, "hashlink-debugger")),
 					cwd: cwd,
 					arguments: launch.arguments,
-					filters: [new BodylessResponses(), new HashLinkOutput()],
+					filters: [new BodylessResponses(), new HashLinkOutput(), new HashLinkSignal()],
 					prelaunch: HashLink.prelaunch(launch.arguments, launch.build)
 				};
 			case "js":
@@ -246,7 +247,7 @@ class Planner {
 						adapter: Node(installed(adapters.hashlink, "hashlink-debugger")),
 						cwd: cwd,
 						arguments: launch.arguments,
-						filters: [new BodylessResponses(), new HashLinkOutput()],
+						filters: [new BodylessResponses(), new HashLinkOutput(), new HashLinkSignal()],
 						prelaunch: launch.prelaunch
 					};
 				case "html5":

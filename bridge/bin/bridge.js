@@ -533,7 +533,7 @@ class bridge_Planner {
 			return { target : target, adapter : bridge_AdapterKind.Node(bridge_Planner.installed(adapters.eval,"eval-debugger")), cwd : cwd, 'arguments' : bridge_targets_Eval.arguments(config,haxeArgs,output,toolchain), filters : bridge_targets_Eval.filters(config,toolchain)};
 		case "hl":
 			let launch = bridge_targets_HashLink.launch(config,haxeArgs,cwd,toolchain);
-			return { target : target, adapter : bridge_AdapterKind.Node(bridge_Planner.installed(adapters.hashlink,"hashlink-debugger")), cwd : cwd, 'arguments' : launch.arguments, filters : [new bridge_dap_BodylessResponses(),new bridge_targets_HashLinkOutput()], prelaunch : bridge_targets_HashLink.prelaunch(launch.arguments,launch.build)};
+			return { target : target, adapter : bridge_AdapterKind.Node(bridge_Planner.installed(adapters.hashlink,"hashlink-debugger")), cwd : cwd, 'arguments' : launch.arguments, filters : [new bridge_dap_BodylessResponses(),new bridge_targets_HashLinkOutput(),new bridge_targets_HashLinkSignal()], prelaunch : bridge_targets_HashLink.prelaunch(launch.arguments,launch.build)};
 		case "hxcpp":
 			return { target : target, adapter : bridge_AdapterKind.OwnHxcpp, cwd : cwd, 'arguments' : bridge_targets_Hxcpp.launch(config,haxeArgs,cwd,toolchain,adapters.hxcppDebugServer), filters : []};
 		case "js":
@@ -579,7 +579,7 @@ class bridge_Planner {
 			switch(target) {
 			case "hl":
 				let launch = bridge_targets_Lime.hashlink(lime,config,cwd,toolchain,env);
-				return { target : target, adapter : bridge_AdapterKind.Node(bridge_Planner.installed(adapters.hashlink,"hashlink-debugger")), cwd : cwd, 'arguments' : launch.arguments, filters : [new bridge_dap_BodylessResponses(),new bridge_targets_HashLinkOutput()], prelaunch : launch.prelaunch};
+				return { target : target, adapter : bridge_AdapterKind.Node(bridge_Planner.installed(adapters.hashlink,"hashlink-debugger")), cwd : cwd, 'arguments' : launch.arguments, filters : [new bridge_dap_BodylessResponses(),new bridge_targets_HashLinkOutput(),new bridge_targets_HashLinkSignal()], prelaunch : launch.prelaunch};
 			case "html5":
 				let launch1 = bridge_targets_Lime.html5(lime,config,cwd,projectRoot,toolchain,env);
 				return { target : "js", adapter : bridge_AdapterKind.JsDebug(bridge_Planner.installed(adapters.jsDebug,"js-debug")), cwd : cwd, 'arguments' : launch1.arguments, filters : [], prelaunch : launch1.prelaunch};
@@ -1813,6 +1813,39 @@ class bridge_targets_HashLinkOutput extends bridge_dap_Filter {
 	}
 }
 bridge_targets_HashLinkOutput.__name__ = true;
+class bridge_targets_HashLinkSignal extends bridge_dap_Filter {
+	constructor() {
+		bridge_dap_Filter._hx_skip_constructor = true;
+		super();
+		bridge_dap_Filter._hx_skip_constructor = false;
+		this._hx_constructor();
+	}
+	_hx_constructor() {
+		this.stopping = false;
+		super._hx_constructor();
+	}
+	fromZed(message,context) {
+		if(message.type == "request" && ["disconnect","terminate","restart"].includes(message.command)) {
+			this.stopping = true;
+		}
+		return Promise.resolve(message);
+	}
+	fromDebugger(message,context) {
+		let tmp;
+		if(!this.stopping && message.type == "event" && message.event == "exited") {
+			let tmp1 = message.body;
+			tmp = (tmp1 != null ? tmp1.exitCode : null) == null;
+		} else {
+			tmp = false;
+		}
+		if(tmp) {
+			let why = process.platform == "linux" ? " It crashed, or a thread other than the main one reached a breakpoint: on Linux, HashLink's debugger only follows the main thread, and a breakpoint in another one ends the program." : " It crashed, or something else stopped it.";
+			context.tell({ seq : 0, type : "event", event : "output", body : { category : "stderr", output : "The program was killed by a signal, so it has no exit code." + why + "\n"}});
+		}
+		return Promise.resolve(message);
+	}
+}
+bridge_targets_HashLinkSignal.__name__ = true;
 class bridge_targets_Hxcpp {
 	static launch(config,haxeArgs,cwd,toolchain,server) {
 		let program = config.program;

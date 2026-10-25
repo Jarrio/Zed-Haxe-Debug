@@ -675,6 +675,29 @@ const tests = {
     await client.close();
   },
 
+  // On Linux, a breakpoint that a worker thread reaches ends a HashLink program (its debugger follows
+  // only the main thread); the debug console says why instead of the session just ending.
+  async hashlinkThreadBreakpoint(env) {
+    if (process.platform !== "linux") return;
+    const haxeArgs = ["-cp", "src", "-main", "Main", "--hl", "bin/main.hl"];
+    const session = await start(env, "threads", { request: "launch", haxeArgs, ...(env.hl ? { hl: env.hl } : {}) });
+    const { client, config } = session;
+    const file = path.join(session.dir, "src", "Main.hx");
+    const launched = client.request("launch", config, buildTime);
+    await client.event("initialized");
+    await client.request("setBreakpoints", { source: { path: file }, breakpoints: [{ line: breakLine(file, "thread") }] });
+    await client.request("configurationDone", {});
+    const launch = await launched;
+    check(launch.success, `launch failed: ${launch.message}`);
+    await client.event("terminated");
+    // On a busy machine hashlink-debugger can end the session without `exited`, and so without a word.
+    if (client.events.some((event) => event.event === "exited")) {
+      check(client.output().includes("killed by a signal"), `no explanation in the output: ${client.output()}`);
+    }
+    await client.request("disconnect", {});
+    await client.close();
+  },
+
   async hashlinkBuildError(env) {
     const { client, config } = await start(env, "hashlink", { request: "launch", haxeArgs: ["-cp", "src", "-main", "Missing", "--hl", "bin/main.hl"] });
     const launch = await client.request("launch", config, buildTime);

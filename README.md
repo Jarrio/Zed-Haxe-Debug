@@ -357,6 +357,9 @@ a breakpoint that another thread reaches ends the program. Breakpoints outside t
 program that has them. Tested with HashLink 1.16 and the October 2026 nightly, with hashlink-debugger
 2.0.0 and 1.4.33.
 
+When a HashLink program is killed by a signal, as it is then or when it crashes, it has no exit code,
+and the session would just end. The debug console says what happened instead.
+
 ## Known issues
 
 - eval's debug console doesn't compile what you type; it runs it against the paused program's values.

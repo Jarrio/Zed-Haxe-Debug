@@ -6,6 +6,7 @@ import bridge.targets.EvalCompletions;
 import bridge.targets.EvalFrameNames;
 import bridge.targets.EvalScopes;
 import bridge.targets.EvalThreads;
+import bridge.targets.HashLinkSignal;
 import js.lib.Promise;
 import utest.Assert;
 import utest.Async;
@@ -178,6 +179,30 @@ class FiltersTest extends utest.Test {
 		new EvalFrameNames().fromDebugger(trace, threads([], [])).then(function(message) {
 			final frames:Array<Dynamic> = message.body.stackFrames;
 			Assert.same(["local function in game.Main.main", "local function", "Main.main"], frames.map(frame -> frame.name));
+			async.done();
+		});
+	}
+
+	function testHashLinkSaysWhyAProgramHasNoExitCode(async:Async) {
+		final told:Array<Message> = [];
+		final context:FilterContext = {request: (_, _) -> null, tell: message -> told.push(message)};
+		final exited = (code:Null<Int>) -> ({seq: 1, type: "event", event: "exited", body: {exitCode: code}} : Message);
+		final filter = new HashLinkSignal();
+		filter.fromDebugger(exited(0), context).then(function(message) {
+			Assert.equals("exited", message.event);
+			Assert.equals(0, told.length);
+			return filter.fromDebugger(exited(null), context);
+		}).then(function(message) {
+			// The event still goes to Zed, after the explanation.
+			Assert.equals("exited", message.event);
+			Assert.equals(1, told.length);
+			Assert.stringContains("killed by a signal", told[0].body.output);
+			// Once Zed ends the session, a VM stopped without an exit code is no surprise.
+			return filter.fromZed(request(5, "disconnect", {}), context);
+		}).then(function(_) {
+			return filter.fromDebugger(exited(null), context);
+		}).then(function(_) {
+			Assert.equals(1, told.length);
 			async.done();
 		});
 	}
