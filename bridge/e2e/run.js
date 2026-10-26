@@ -374,6 +374,27 @@ const tests = {
     await client.close();
   },
 
+  // A debug build in a folder where the project was built without the debugger, then the project's own
+  // build again: hxcpp has to rebuild its runtime each time, or the program fails to link.
+  async hxcppAfterOwnBuild(env) {
+    const session = await start(env, "hxcpp", { request: "launch" });
+    const { client, dir } = session;
+    const build = (when) => {
+      const result = childProcess.spawnSync(env.haxe ?? "haxe", ["build.hxml", "-debug"], { cwd: dir, encoding: "utf8" });
+      check(result.status === 0, `the project's own build ${when} failed: ${(result.stdout + result.stderr).slice(-1500)}`);
+    };
+    build("before debugging");
+    const file = path.join(dir, "src", "Main.hx");
+    const line = breakLine(file, "main");
+    const { threadId, frame } = await runToBreakpoint(session, file, line);
+    check(frame.line === line, `stopped at line ${frame.line}, expected ${line}`);
+    await client.request("continue", { threadId });
+    await client.event("terminated");
+    await client.request("disconnect", {});
+    await client.close();
+    build("after debugging");
+  },
+
   // Breakpoints set while the program runs, and the program killed when the session ends.
   async hxcppStepIn(env) {
     const session = await start(env, "hxcpp", { request: "launch" });

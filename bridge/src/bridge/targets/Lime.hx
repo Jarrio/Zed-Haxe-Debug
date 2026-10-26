@@ -113,7 +113,11 @@ class Lime {
 		if (!ownServer && server == null) {
 			throw new LaunchError('hxcpp-debug-server isn\'t installed, and the project doesn\'t use it.');
 		}
-		final haxeFlags = ownServer ? [] : ['--haxeflag=-cp $server', "--haxeflag=--macro hxcpp.debug.jsonrpc.Macro.injectServer()"];
+		final haxeFlags = ownServer ? [] : [
+			'--haxeflag=-cp $server',
+			"--haxeflag=--macro hxcpp.debug.jsonrpc.Macro.injectServer()",
+			'--haxeflag=-D ${Hxcpp.rebuildDefine}'
+		];
 		final environment = toolEnvironment(toolchain, env);
 		for (name => value in config.env ?? {}) {
 			environment.set(name, value);

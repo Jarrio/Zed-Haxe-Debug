@@ -53,6 +53,15 @@ class Hxcpp {
 
 	static inline final library = "hxcpp-debug-server";
 
+	/**
+		Defined in every build the bridge adds the debug server to. The server defines `HXCPP_DEBUGGER`,
+		which changes what hxcpp's own runtime compiles to, but hxcpp only rebuilds for a changed define
+		with "hxcpp" in lowercase in its name. Without this one, a debug build in a folder where the
+		project was built without the debugger, or the other way round, reuses the other build's objects
+		and fails to link.
+	**/
+	public static inline final rebuildDefine = "hxcpp_debugger_build";
+
 	public static function launch(config:LaunchConfig, haxeArgs:Array<String>, cwd:String, toolchain:ResolvedToolchain, server:Null<String>):HxcppLaunch {
 		final program = config.program;
 		if (program != null && haxeArgs.length == 0) {
@@ -81,6 +90,8 @@ class Hxcpp {
 			extra.push(server);
 			extra.push("--macro");
 			extra.push("hxcpp.debug.jsonrpc.Macro.injectServer()");
+			extra.push("-D");
+			extra.push(rebuildDefine);
 		}
 		final definedPort = Std.parseInt(HaxeArgs.define(args, "HXCPP_DEBUG_PORT") ?? "");
 		return {

@@ -67,7 +67,8 @@ class PlanTest extends utest.Test {
 		final launch:HxcppLaunch = plan.arguments;
 		// The --cmd would run the program without the debugger.
 		Assert.same([
-			"-cp", "src", "-main", "app.Main", "--cpp", "bin", "-debug", "-cp", server(dir), "--macro", "hxcpp.debug.jsonrpc.Macro.injectServer()"
+			"-cp", "src", "-main", "app.Main", "--cpp", "bin", "-debug", "-cp", server(dir), "--macro", "hxcpp.debug.jsonrpc.Macro.injectServer()",
+			"-D", "hxcpp_debugger_build"
 		], launch.build.args);
 		Assert.equals(executable(dir, "bin/Main-debug"), launch.program);
 		Assert.same(["--fast"], launch.args);
@@ -230,7 +231,7 @@ class PlanTest extends utest.Test {
 		// A debug build that Lime also runs, with the debug server added through --haxeflag.
 		Assert.same([
 			"run", "lime", "test", Path.join([dir, "project.xml"]), "linux", "-debug", "-nocolor", '--haxeflag=-cp ${server(dir)}',
-			"--haxeflag=--macro hxcpp.debug.jsonrpc.Macro.injectServer()"
+			"--haxeflag=--macro hxcpp.debug.jsonrpc.Macro.injectServer()", "--haxeflag=-D hxcpp_debugger_build"
 		], launch.args);
 		// The project file's folder, with Haxe's separators.
 		Assert.equals(Path.normalize(dir), Path.normalize(launch.cwd));
@@ -303,6 +304,7 @@ class PlanTest extends utest.Test {
 			final hxml = sys.io.File.getContent(Path.join([dir, "out", "clay", "linux-debug", "project.hxml"]));
 			Assert.stringContains('-cp ${server(dir)}', hxml);
 			Assert.stringContains("--macro hxcpp.debug.jsonrpc.Macro.injectServer()", hxml);
+			Assert.stringContains("-D hxcpp_debugger_build", hxml);
 			async.done();
 		}, function(error) {
 			Assert.fail(Std.string(error));

@@ -141,6 +141,11 @@ The debugger builds the hxml with `-debug` and hxcpp-debug-server added and any 
 runs `<--cpp folder>/<main class>-debug`. The build's output shows in the debug console, and a build
 error ends the session with the compiler's first lines.
 
+The debug build goes into the same folder as your own build of the hxml, so switching between the two
+rebuilds hxcpp's runtime and your code, which takes a while in a big project. (hxcpp doesn't notice the
+`HXCPP_DEBUGGER` define the debug server sets, and would reuse the other build's objects and fail to
+link, so the debugger also defines `hxcpp_debugger_build`, which it does notice.)
+
 hxcpp-debug-server is a Haxe library compiled into the program, which connects back to the debugger
 when it starts. The extension downloads it from [a fork of vshaxe/hxcpp-debugger](https://github.com/Jarrio/hxcpp-debugger),
 which adds much that the haxelib release (1.2.4, from 2020) lacks: Haxe 4.0 and Haxe 5 support, threads,

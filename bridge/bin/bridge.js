@@ -1501,7 +1501,7 @@ class bridge_targets_Ceramic {
 					if(!sys_FileSystem.exists(path)) {
 						return Promise.reject("Ceramic's setup didn't write " + path + ".");
 					}
-					js_node_Fs.writeFileSync(path,js_node_Fs.readFileSync(path,{ encoding : "utf8"}) + ("\n-cp " + server + "\n--macro hxcpp.debug.jsonrpc.Macro.injectServer()\n"));
+					js_node_Fs.writeFileSync(path,js_node_Fs.readFileSync(path,{ encoding : "utf8"}) + ("\n-cp " + server + "\n--macro hxcpp.debug.jsonrpc.Macro.injectServer()\n-D " + "hxcpp_debugger_build" + "\n"));
 				}
 				return arguments1;
 			});
@@ -1933,6 +1933,8 @@ class bridge_targets_Hxcpp {
 			extra.push(server);
 			extra.push("--macro");
 			extra.push("hxcpp.debug.jsonrpc.Macro.injectServer()");
+			extra.push("-D");
+			extra.push("hxcpp_debugger_build");
 		}
 		let tmp = bridge_project_HaxeArgs.define(args,"HXCPP_DEBUG_PORT");
 		let definedPort = Std.parseInt(tmp != null ? tmp : "");
@@ -3252,7 +3254,7 @@ class bridge_targets_Lime {
 		if(!ownServer && server == null) {
 			throw new bridge_LaunchError("hxcpp-debug-server isn't installed, and the project doesn't use it.");
 		}
-		let haxeFlags = ownServer ? [] : ["--haxeflag=-cp " + server,"--haxeflag=--macro hxcpp.debug.jsonrpc.Macro.injectServer()"];
+		let haxeFlags = ownServer ? [] : ["--haxeflag=-cp " + server,"--haxeflag=--macro hxcpp.debug.jsonrpc.Macro.injectServer()","--haxeflag=-D " + "hxcpp_debugger_build"];
 		let environment = bridge_targets_Lime.toolEnvironment(toolchain,env);
 		let tmp1 = config.env;
 		let access = tmp1 != null ? tmp1 : { };

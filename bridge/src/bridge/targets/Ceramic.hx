@@ -114,7 +114,8 @@ class Ceramic {
 								return Promise.reject('Ceramic\'s setup didn\'t write $path.');
 							}
 							// Gone at the next setup, which every Ceramic build without the debugger does.
-							File.saveContent(path, File.getContent(path) + '\n-cp $server\n--macro hxcpp.debug.jsonrpc.Macro.injectServer()\n');
+							File.saveContent(path, File.getContent(path)
+								+ '\n-cp $server\n--macro hxcpp.debug.jsonrpc.Macro.injectServer()\n-D ${Hxcpp.rebuildDefine}\n');
 						}
 						return arguments;
 					});
