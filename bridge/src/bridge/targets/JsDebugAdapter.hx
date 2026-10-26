@@ -20,7 +20,7 @@ import js.node.Net;
 **/
 class JsDebugAdapter implements Adapter {
 	public var onMessage:Message->Void = _ -> {};
-	public var onClose:Int->Void = _ -> {};
+	public var onClose:(code:Int, ended:Null<ProcessEnd>) -> Void = (_, _) -> {};
 
 	static inline final startSeconds = 10;
 
@@ -32,6 +32,7 @@ class JsDebugAdapter implements Adapter {
 	var launched = false;
 	var closed = false;
 	var terminated = false;
+	final errors = new ErrorOutput();
 
 	/** Zed's messages from before js-debug was listening. **/
 	final early:Array<Message> = [];
@@ -90,13 +91,16 @@ class JsDebugAdapter implements Adapter {
 				});
 			}
 		});
-		server.stderr.on("data", (chunk:Buffer) -> process.stderr.write(chunk));
+		server.stderr.on("data", function(chunk:Buffer) {
+			process.stderr.write(chunk);
+			errors.add(chunk.toString());
+		});
 		server.on("error", (error:js.lib.Error) -> fail('Couldn\'t start js-debug: ${error.message}'));
-		server.on("close", function(code:Null<Int>, _) {
+		server.on("close", function(code:Null<Int>, signal:Null<String>) {
 			if (!closed) {
-				Log.info('js-debug exited (code $code)');
-				finish();
-				close(code ?? 1);
+				Log.info('js-debug exited (${code != null ? 'code $code' : signal})');
+				// The session ends Zed's side, saying why if nobody asked js-debug to stop.
+				close(code ?? 1, {code: code, signal: signal, errors: errors.tail()});
 			}
 		});
 	}
@@ -141,7 +145,7 @@ class JsDebugAdapter implements Adapter {
 					success: true
 				});
 				if (message.command == "disconnect") {
-					close(0);
+					close(0, null);
 				}
 			case "setBreakpoints":
 				breakpoints.set(message.arguments.source.path, message.arguments);
@@ -181,7 +185,7 @@ class JsDebugAdapter implements Adapter {
 		}
 		if (message.type == "response" && message.command == "disconnect") {
 			onMessage(message);
-			close(0);
+			close(0, null);
 			return;
 		}
 		onMessage(message);
@@ -305,16 +309,16 @@ class JsDebugAdapter implements Adapter {
 			}
 		}
 		early.resize(0);
-		close(1);
+		close(1, null);
 	}
 
-	function close(code:Int) {
+	function close(code:Int, ended:Null<ProcessEnd>) {
 		if (closed) {
 			return;
 		}
 		closed = true;
 		kill();
-		onClose(code);
+		onClose(code, ended);
 	}
 
 	public function kill() {

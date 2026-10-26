@@ -25,6 +25,9 @@ class Session {
 	var debugger:Null<Adapter>;
 	var exiting = false;
 
+	/** Zed asked for the session to end, or the debugger said it had ended. **/
+	var finished = false;
+
 	/** Sequence numbers of the messages the bridge sends Zed itself. **/
 	var seq = 0;
 
@@ -67,6 +70,9 @@ class Session {
 		filters = plan.filters.concat([new VariableEdits()]);
 		debugger.onMessage = function(message) {
 			Log.message("debugger", message);
+			if (message.type == "event" && message.event == "terminated") {
+				finished = true;
+			}
 			final answer = message.type == "response" ? ownRequests.get(message.request_seq) : null;
 			if (answer != null) {
 				ownRequests.remove(message.request_seq);
@@ -75,14 +81,36 @@ class Session {
 			}
 			toZed(message, 0);
 		};
-		debugger.onClose = function(code) {
+		debugger.onClose = function(code, ended) {
 			for (seq => answer in ownRequests) {
 				answer({seq: 0, type: "response", request_seq: seq, success: false, message: "the debugger exited"});
 			}
 			ownRequests.clear();
+			if (ended != null && !finished && !exiting) {
+				// Otherwise Zed would only see the adapter gone, and the reason would stay in its adapter log.
+				final why = unexpectedEnd(debuggerName(plan.target), ended);
+				Log.info(why);
+				tell({seq: 0, type: "event", event: "output", body: {category: "stderr", output: why}});
+				tell({seq: 0, type: "event", event: "terminated"});
+			}
 			queue.then(_ -> exit(code));
 		};
 		this.debugger = debugger;
+	}
+
+	static function debuggerName(target:String):String {
+		return switch target {
+			case "eval": "eval-debugger";
+			case "hl": "hashlink-debugger";
+			case "js": "js-debug";
+			case other: 'The $other debugger';
+		}
+	}
+
+	/** What the debug console says when the debugger's process ends while the session is still going. **/
+	static function unexpectedEnd(name:String, ended:ProcessEnd):String {
+		final what = ended.code != null ? '$name stopped unexpectedly, with exit code ${ended.code}.' : ended.signal != null ? '$name stopped unexpectedly, killed by ${ended.signal}.' : '$name couldn\'t start.';
+		return ended.errors == "" ? '$what\n' : '$what Its last error output:\n${ended.errors}\n';
 	}
 
 	/**
@@ -147,6 +175,9 @@ class Session {
 
 	function fromZed(message:Message) {
 		Log.message("zed", message);
+		if (message.type == "request" && ["disconnect", "terminate", "restart"].contains(message.command)) {
+			finished = true;
+		}
 		final debugger = debugger;
 		if (debugger == null) {
 			answer(message);

@@ -1,5 +1,6 @@
 package bridge.dap;
 
+import bridge.dap.Adapter;
 import bridge.util.ProcessTree;
 import js.Node.process;
 import js.node.Buffer;
@@ -11,24 +12,36 @@ import js.node.Buffer;
 **/
 class NodeAdapter implements Adapter {
 	public var onMessage:Message->Void = _ -> {};
-	public var onClose:Int->Void = _ -> {};
+	public var onClose:(code:Int, ended:Null<ProcessEnd>) -> Void = (_, _) -> {};
 
 	final child:js.node.child_process.ChildProcess;
 	final connection:Connection;
+	final errors = new ErrorOutput();
 
 	public function new(script:String, cwd:String) {
 		child = ProcessTree.spawn(process.execPath, [script], {cwd: cwd, windowsHide: true});
 		connection = new Connection(child.stdout, child.stdin);
 		connection.onMessage = message -> onMessage(message);
-		child.stderr.on("data", (chunk:Buffer) -> process.stderr.write(chunk));
+		child.stderr.on("data", function(chunk:Buffer) {
+			process.stderr.write(chunk);
+			errors.add(chunk.toString());
+		});
+		// A process that can't start may report both.
+		var closed = false;
 		child.on("error", function(error:js.lib.Error) {
 			Log.info('could not start the debugger: ${error.message}');
-			onClose(1);
+			if (!closed) {
+				closed = true;
+				onClose(1, {code: null, signal: null, errors: error.message});
+			}
 		});
 		// "close" rather than "exit": the debugger's last messages may still be unread when it exits.
 		child.on("close", function(code:Null<Int>, signal:Null<String>) {
 			Log.info('the debugger exited (${code != null ? 'code $code' : signal})');
-			onClose(code ?? 1);
+			if (!closed) {
+				closed = true;
+				onClose(code ?? 1, {code: code, signal: signal, errors: errors.tail()});
+			}
 		});
 	}
 

@@ -24,7 +24,7 @@ import sys.FileSystem;
 @:access(bridge.util.Exec)
 class HxcppAdapter implements Adapter {
 	public var onMessage:Message->Void = _ -> {};
-	public var onClose:Int->Void = _ -> {};
+	public var onClose:(code:Int, ended:Null<ProcessEnd>) -> Void = (_, _) -> {};
 
 	static inline final connectSeconds = 30;
 
@@ -267,7 +267,7 @@ class HxcppAdapter implements Adapter {
 			case "disconnect":
 				respond(message);
 				kill();
-				onClose(0);
+				onClose(0, null);
 			case other:
 				respond(message, null, 'The hxcpp debugger doesn\'t support "$other".');
 		}

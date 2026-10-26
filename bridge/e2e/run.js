@@ -744,6 +744,19 @@ const tests = {
     await client.close();
   },
 
+  // A debugger that crashes: the debug console says so, with the debugger's last error output, and the
+  // session ends, where Zed would only see the adapter gone.
+  async debuggerCrash(env) {
+    const crashing = path.join(__dirname, "crashing-adapter.js");
+    const { client, config } = await start({ ...env, eval: crashing }, "macro", { request: "launch", haxeArgs: ["-cp", "src", "-main", "Main", "--interp"] });
+    client.send("launch", config);
+    await client.event("terminated");
+    const output = client.output();
+    check(output.includes("eval-debugger stopped unexpectedly, with exit code 1. Its last error output:"), `no explanation in the output: ${output}`);
+    check(output.includes("something went wrong in the debugger"), `the debugger's error isn't in the output: ${output}`);
+    await client.close();
+  },
+
   async unsupported(env) {
     const { client, config } = await start(env, "macro", { request: "launch", haxeArgs: ["-cp", "src", "-main", "Main", "--python", "bin/main.py"] });
     const launch = await client.request("launch", config);
@@ -909,6 +922,9 @@ async function main() {
     lastClient = null;
     try {
       await test(env);
+      // Only debuggerCrash's debugger should end before its session.
+      const unexpected = /^.* (stopped unexpectedly|couldn't start)\b.*$/m.exec(lastClient?.output() ?? "");
+      check(name === "debuggerCrash" || unexpected == null, `the debugger ended early: ${unexpected?.[0]}`);
       console.log(`ok ${name}`);
     } catch (error) {
       failed++;

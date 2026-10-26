@@ -766,6 +766,7 @@ class bridge_Session {
 		this.ownRequests = new haxe_ds_IntMap();
 		this.requestSeq = 1000000000;
 		this.seq = 0;
+		this.finished = false;
 		this.exiting = false;
 		this.plan = plan;
 		let tmp = error;
@@ -802,6 +803,9 @@ class bridge_Session {
 		let _gthis = this;
 		$debugger.onMessage = function(message) {
 			bridge_Log.message("debugger",message);
+			if(message.type == "event" && message.event == "terminated") {
+				_gthis.finished = true;
+			}
 			let answer = message.type == "response" ? _gthis.ownRequests.h[message.request_seq] : null;
 			if(answer != null) {
 				_gthis.ownRequests.remove(message.request_seq);
@@ -810,7 +814,7 @@ class bridge_Session {
 			}
 			_gthis.toZed(message,0);
 		};
-		$debugger.onClose = function(code) {
+		$debugger.onClose = function(code,ended) {
 			let map = _gthis.ownRequests;
 			let _g_map = map;
 			let _g_keys = map.keys();
@@ -823,6 +827,12 @@ class bridge_Session {
 				answer({ seq : 0, type : "response", request_seq : seq, success : false, message : "the debugger exited"});
 			}
 			_gthis.ownRequests.h = { };
+			if(ended != null && !_gthis.finished && !_gthis.exiting) {
+				let why = bridge_Session.unexpectedEnd(bridge_Session.debuggerName(plan.target),ended);
+				bridge_Log.info(why);
+				_gthis.tell({ seq : 0, type : "event", event : "output", body : { category : "stderr", output : why}});
+				_gthis.tell({ seq : 0, type : "event", event : "terminated"});
+			}
 			_gthis.queue.then(function(_) {
 				_gthis.exit(code);
 			});
@@ -893,6 +903,9 @@ class bridge_Session {
 	}
 	fromZed(message) {
 		bridge_Log.message("zed",message);
+		if(message.type == "request" && ["disconnect","terminate","restart"].includes(message.command)) {
+			this.finished = true;
+		}
 		let $debugger = this.debugger;
 		if($debugger == null) {
 			this.answer(message);
@@ -996,8 +1009,49 @@ class bridge_Session {
 			process.exit(code);
 		});
 	}
+	static debuggerName(target) {
+		switch(target) {
+		case "eval":
+			return "eval-debugger";
+		case "hl":
+			return "hashlink-debugger";
+		case "js":
+			return "js-debug";
+		default:
+			let other = target;
+			return "The " + other + " debugger";
+		}
+	}
+	static unexpectedEnd(name,ended) {
+		let what = ended.code != null ? "" + name + " stopped unexpectedly, with exit code " + ended.code + "." : ended.signal != null ? "" + name + " stopped unexpectedly, killed by " + ended.signal + "." : "" + name + " couldn't start.";
+		if(ended.errors == "") {
+			return "" + what + "\n";
+		} else {
+			return "" + what + " Its last error output:\n" + ended.errors + "\n";
+		}
+	}
 }
 bridge_Session.__name__ = true;
+class bridge_dap_ErrorOutput {
+	constructor() {
+		this.text = "";
+	}
+	add(chunk) {
+		this.text += chunk;
+		if(this.text.length > 8000) {
+			this.text = HxOverrides.substr(this.text,-4000,null);
+		}
+	}
+	tail() {
+		if(this.text.length <= 4000) {
+			return StringTools.trim(this.text);
+		}
+		let end = HxOverrides.substr(this.text,-4000,null);
+		let newline = end.indexOf("\n");
+		return StringTools.trim(newline < 0 ? end : HxOverrides.substr(end,newline + 1,null));
+	}
+}
+bridge_dap_ErrorOutput.__name__ = true;
 class bridge_dap_Filter {
 	constructor() {
 		if(bridge_dap_Filter._hx_skip_constructor) {
@@ -1069,7 +1123,8 @@ class bridge_dap_Connection {
 bridge_dap_Connection.__name__ = true;
 class bridge_dap_NodeAdapter {
 	constructor(script,cwd) {
-		this.onClose = function(_) {
+		this.errors = new bridge_dap_ErrorOutput();
+		this.onClose = function(_,_1) {
 		};
 		this.onMessage = function(_) {
 		};
@@ -1080,16 +1135,24 @@ class bridge_dap_NodeAdapter {
 			_gthis.onMessage(message);
 		};
 		this.child.stderr.on("data",function(chunk) {
-			return process.stderr.write(chunk);
+			process.stderr.write(chunk);
+			_gthis.errors.add(chunk.toString());
 		});
+		let closed = false;
 		this.child.on("error",function(error) {
 			bridge_Log.info("could not start the debugger: " + error.message);
-			_gthis.onClose(1);
+			if(!closed) {
+				closed = true;
+				_gthis.onClose(1,{ code : null, signal : null, errors : error.message});
+			}
 		});
 		this.child.on("close",function(code,signal) {
 			bridge_Log.info("the debugger exited (" + (code != null ? "code " + code : signal) + ")");
-			let tmp = code;
-			_gthis.onClose(tmp != null ? tmp : 1);
+			if(!closed) {
+				closed = true;
+				let tmp = code;
+				_gthis.onClose(tmp != null ? tmp : 1,{ code : code, signal : signal, errors : _gthis.errors.tail()});
+			}
 		});
 	}
 	send(message) {
@@ -1944,7 +2007,7 @@ class bridge_targets_HxcppAdapter {
 		this.terminated = false;
 		this.killed = false;
 		this.seq = 0;
-		this.onClose = function(_) {
+		this.onClose = function(_,_1) {
 		};
 		this.onMessage = function(_) {
 		};
@@ -1999,7 +2062,7 @@ class bridge_targets_HxcppAdapter {
 			case "disconnect":
 				this.respond(message);
 				this.kill();
-				this.onClose(0);
+				this.onClose(0,null);
 				break;
 			case "evaluate":
 				let frame1 = this.frameOf(args.frameId);
@@ -2806,12 +2869,13 @@ class bridge_targets_JsDebugAdapter {
 		this.breakpoints = new haxe_ds_StringMap();
 		this.initializeArguments = { };
 		this.early = [];
+		this.errors = new bridge_dap_ErrorOutput();
 		this.terminated = false;
 		this.closed = false;
 		this.launched = false;
 		this.childReady = false;
 		this.port = 0;
-		this.onClose = function(_) {
+		this.onClose = function(_,_1) {
 		};
 		this.onMessage = function(_) {
 		};
@@ -2853,17 +2917,17 @@ class bridge_targets_JsDebugAdapter {
 			}
 		});
 		server1.stderr.on("data",function(chunk) {
-			return process.stderr.write(chunk);
+			process.stderr.write(chunk);
+			_gthis.errors.add(chunk.toString());
 		});
 		server1.on("error",function(error) {
 			_gthis.fail("Couldn't start js-debug: " + error.message);
 		});
-		server1.on("close",function(code,_) {
+		server1.on("close",function(code,signal) {
 			if(!_gthis.closed) {
-				bridge_Log.info("js-debug exited (code " + code + ")");
-				_gthis.finish();
+				bridge_Log.info("js-debug exited (" + (code != null ? "code " + code : signal) + ")");
 				let tmp = code;
-				_gthis.close(tmp != null ? tmp : 1);
+				_gthis.close(tmp != null ? tmp : 1,{ code : code, signal : signal, errors : _gthis.errors.tail()});
 			}
 		});
 	}
@@ -2917,7 +2981,7 @@ class bridge_targets_JsDebugAdapter {
 				if(!this.launched) {
 					this.onMessage({ seq : ++this.seq, type : "response", request_seq : message.seq, command : message.command, success : true});
 					if(message.command == "disconnect") {
-						this.close(0);
+						this.close(0,null);
 					}
 				} else {
 					let child = this.child;
@@ -2951,7 +3015,7 @@ class bridge_targets_JsDebugAdapter {
 		}
 		if(message.type == "response" && message.command == "disconnect") {
 			this.onMessage(message);
-			this.close(0);
+			this.close(0,null);
 			return;
 		}
 		this.onMessage(message);
@@ -3078,15 +3142,15 @@ class bridge_targets_JsDebugAdapter {
 			}
 		}
 		this.early.length = 0;
-		this.close(1);
+		this.close(1,null);
 	}
-	close(code) {
+	close(code,ended) {
 		if(this.closed) {
 			return;
 		}
 		this.closed = true;
 		this.kill();
-		this.onClose(code);
+		this.onClose(code,ended);
 	}
 	kill() {
 		if(this.serverProcess != null) {

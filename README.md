@@ -26,6 +26,7 @@ projects, which need no configuration at all.
 - [Changing values](#changing-values)
 - [Threads and timers](#threads-and-timers)
 - [Known issues](#known-issues)
+- [Reporting problems](#reporting-problems)
 - [How it works](#how-it-works)
 - [Development](#development)
 
@@ -387,6 +388,13 @@ and the session would just end. The debug console says what happened instead.
 - On Haxe 5 with hxcpp master (October 2026), `Lock.wait()` without a timeout returns at once, with or
   without the debugger: Haxe passes -1 for "no timeout", which hxcpp reads as a deadline already past.
   A program that waits on a `Lock` carries on without waiting; `lock.wait(seconds)` works.
+
+## Reporting problems
+
+When a debugger stops in the middle of a session, the debug console says which one, its exit code or the
+signal that killed it, and the last thing it wrote to its error output. Please include that in a bug
+report, along with a log of the session: add `"traceFile": "/some/file.log"` to the debug configuration
+and run it again. `dev: open debug adapter logs` in Zed shows the same messages.
 
 ## How it works
 
